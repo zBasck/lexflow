@@ -910,7 +910,14 @@
                     h('td', null, h('div', { class: 'strong' }, d.title), d.notes ? h('div', { class: 'small muted' }, d.notes) : null),
                     h('td', null, badge(d.category || '-', 'gold')),
                     h('td', { class: 'small' }, fmtDate(d.date)),
-                    h('td', { class: 'small muted' }, d.size || '-')
+                    h('td', { class: 'small muted' }, d.size || '-'),
+                    h('td', null, h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 8px', fontSize: '11px' },
+                      onclick: async () => {
+                        if (!confirm('Excluir o documento "' + d.title + '"?')) return;
+                        try { await API.req('DELETE', '/api/documents/' + d.id); toast('Documento excluido', 'success'); render(); }
+                        catch (err) { toast(err.message, 'error'); }
+                      }
+                    }, '🗑'))
                   )))
                 )
           )
@@ -953,7 +960,14 @@
                   h('div', { class: 'title' }, e.title),
                   h('div', { class: 'meta' }, fmtDate(e.date) + ' ' + (e.time || '') + ' • ' + (e.location || 'Sem local'))
                 ),
-                badge(e.type, e.type === 'audiencia' ? 'danger' : e.type === 'prazo' ? 'warning' : 'info')
+                h('div', { class: 'right', style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                  badge(e.type, e.type === 'audiencia' ? 'danger' : e.type === 'prazo' ? 'warning' : 'info'),
+                  h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 6px', fontSize: '11px' }, onclick: async () => {
+                    if (!confirm('Excluir o evento "' + e.title + '"?')) return;
+                    try { await API.req('DELETE', '/api/events/' + e.id); toast('Evento excluido', 'success'); await loadAll(); render(); }
+                    catch (err) { toast(err.message, 'error'); }
+                  } }, '🗑')
+                )
               )))
           )
         )
@@ -1071,6 +1085,26 @@
     }
   }
 
+  async function downloadBackup() {
+    try {
+      const resp = await fetch('/api/export', { headers: { 'Authorization': 'Bearer ' + S.token } });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status }));
+        throw new Error(err.error || ('HTTP ' + resp.status));
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'lexflow_backup_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('Backup baixado com sucesso', 'success');
+    } catch (err) { toast('Erro ao baixar backup: ' + err.message, 'error'); }
+  }
+
   function openDocumentModal(caseId) {
     const m = h('form', { id: 'doc-form', onsubmit: async (e) => {
       e.preventDefault();
@@ -1161,8 +1195,13 @@
                   h('div', { class: 'client-stat' }, h('div', { class: 'lbl' }, 'Pago'), h('div', { class: 'val' }, fmtBRL(paid))),
                   h('div', { class: 'client-stat' }, h('div', { class: 'lbl' }, 'A receber'), h('div', { class: 'val' }, fmtBRL(pending)))
                 ),
-                h('div', { style: { marginTop: '10px' } },
-                  h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openClientModal(cl) }, '✏️ Editar')
+                h('div', { style: { marginTop: '10px', display: 'flex', gap: '6px' } },
+                  h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openClientModal(cl) }, '✏️ Editar'),
+                  h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)' }, onclick: async () => {
+                    if (!confirm('Excluir o cliente "' + cl.name + '"? O cliente ira para a lixeira.')) return;
+                    try { await API.req('DELETE', '/api/clients/' + cl.id); toast('Cliente excluido', 'success'); await loadAll(); render(); }
+                    catch (err) { toast(err.message, 'error'); }
+                  } }, '🗑 Excluir')
                 )
               );
             })
@@ -1404,7 +1443,12 @@
                   ),
                   h('div', { class: 'right' },
                     isOverdue ? badge('Atrasada', 'danger') : null,
-                    priorityBadge(t.priority)
+                    priorityBadge(t.priority),
+                    h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 6px', fontSize: '11px' }, onclick: async () => {
+                      if (!confirm('Excluir a tarefa "' + t.title + '"?')) return;
+                      try { await API.req('DELETE', '/api/tasks/' + t.id); toast('Tarefa excluida', 'success'); await loadAll(); render(); }
+                      catch (err) { toast(err.message, 'error'); }
+                    } }, '🗑')
                   )
                 );
               })
@@ -1715,7 +1759,14 @@
                   h('td', { class: 'small' }, d.type || '-'),
                   h('td', { class: 'small' }, cs ? cs.title : '-'),
                   h('td', { class: 'small' }, fmtDate(d.date)),
-                  h('td', { class: 'small muted' }, d.size || '-')
+                  h('td', { class: 'small muted' }, d.size || '-'),
+                  h('td', null, h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 8px', fontSize: '11px' },
+                    onclick: async () => {
+                      if (!confirm('Excluir o documento "' + d.title + '"?')) return;
+                      try { await API.req('DELETE', '/api/documents/' + d.id); toast('Documento excluido', 'success'); render(); await loadAll(); }
+                      catch (err) { toast(err.message, 'error'); }
+                    }
+                  }, '🗑'))
                 );
               }))
             )
@@ -1908,7 +1959,7 @@
           h('div', { class: 'card-header' }, h('h3', null, 'Dados e backup')),
           h('div', { class: 'mb-3' },
             h('p', { class: 'small muted', style: { marginBottom: '8px' } }, 'Exporte um backup completo do seu banco de dados em formato JSON. O arquivo contem todos os cadastros, casos, tarefas, eventos e transacoes.'),
-            h('a', { class: 'btn btn-ghost', href: '/api/export', download: 'lexflow_backup.json', target: '_blank' }, '⬇ Baixar backup JSON')
+            h('button', { class: 'btn btn-ghost', onclick: downloadBackup }, '⬇ Baixar backup JSON')
           ),
           h('div', { class: 'mb-3' },
             h('p', { class: 'small muted', style: { marginBottom: '8px' } }, 'Importe um backup JSON exportado anteriormente. Apenas socios podem importar. Registros novos sao adicionados sem substituir os existentes.'),
@@ -2101,6 +2152,15 @@
         toast('Item restaurado', 'success');
       } catch (e) { toast(e.message, 'error'); }
     };
+    const purge = async (kind, id, label) => {
+      if (!confirm('Excluir permanentemente "' + label + '"? Esta acao NAO pode ser desfeita.')) return;
+      try {
+        await API.req('DELETE', '/api/trash/' + kind + '/' + id);
+        await loadAll();
+        render();
+        toast('Item excluido permanentemente', 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    };
     const sec = (title, items, kind) => h('div', { class: 'card mb-3' },
       h('div', { class: 'card-header' }, h('h3', null, title + ' (' + items.length + ')')),
       items.length === 0 ? h('div', { class: 'empty' }, h('p', null, 'Nada por aqui.')) :
@@ -2109,7 +2169,11 @@
           h('tbody', null, ...items.map(it => h('tr', null,
             h('td', null, h('div', { class: 'strong' }, it.name || it.title)),
             h('td', { class: 'small muted' }, it.deleted_at ? fmtDate(it.deleted_at) : '-'),
-            h('td', null, h('button', { class: 'btn btn-sm btn-ghost', onclick: () => restore(kind, it.id) }, '↶ Restaurar'))
+            h('td', null,
+              h('button', { class: 'btn btn-sm btn-ghost', onclick: () => restore(kind, it.id) }, '↶ Restaurar'),
+              ' ',
+              h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)' }, onclick: () => purge(kind, it.id, it.name || it.title) }, '🗑 Excluir')
+            )
           )))
         )
     );

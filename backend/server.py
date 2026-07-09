@@ -669,8 +669,15 @@ def dispatch(handler, method, path):
             body = read_body(handler)
             return fn(handler, m.group(1), body)
 
+    # Pattern especifico para /api/case-updates/{id} (3 segmentos com hifens)
+    m = re.match(r"^/api/case-updates/([\w\-]+)$", path)
+    if m and method == "DELETE":
+        fn = ROUTES.get(("DELETE", "/api/case-updates/{id}"))
+        if fn:
+            return fn(handler, m.group(1))
+
     # Pattern generico /api/{resource}/{id}/{action} (3 segmentos)
-    m = re.match(r"^/api/(\w+)/([\w\-]+)/(\w+)$", path)
+    m = re.match(r"^/api/([\w\-]+)/([\w\-]+)/(\w+)$", path)
     if m:
         resource, rid, action = m.group(1), m.group(2), m.group(3)
         fn = ROUTES.get((method, f"/api/{resource}/{{id}}/{action}"))
@@ -730,6 +737,24 @@ def auth_register(handler):
     return json_response(handler, 200, {"token": token, "user": dict(user)})
 
 
+def auth_theme(handler):
+    token = handler.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    conn = db()
+    row = conn.execute("SELECT id FROM users WHERE token=?", (token,)).fetchone()
+    if not row:
+        conn.close()
+        return json_response(handler, 401, {"error": "Nao autenticado."})
+    body = read_body(handler)
+    if not body or 'theme' not in body:
+        conn.close()
+        return json_response(handler, 400, {"error": "theme obrigatorio"})
+    theme = body['theme'] if body['theme'] in ('light', 'dark', 'auto') else 'auto'
+    conn.execute("UPDATE users SET theme=?", (theme,))
+    conn.execute("UPDATE users SET theme=? WHERE id=?", (theme, row['id']))
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True, "theme": theme})
+
 def auth_login(handler):
     body = read_body(handler)
     email = (body.get("email") or "").strip().lower()
@@ -772,6 +797,7 @@ def auth_me(handler):
 route("POST", "/api/auth/register", auth_register)
 route("POST", "/api/auth/login", auth_login)
 route("POST", "/api/auth/logout", auth_logout)
+route("POST", "/api/auth/theme", auth_theme)
 route("GET", "/api/auth/me", auth_me)
 
 
