@@ -224,6 +224,53 @@ def _parse_pje_html(html: str) -> list:
     return out
 
 
+
+def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int = 30) -> list:
+    """Tenta a API publica do Comunica PJE (JSON). Retorna [] se falhar."""
+    # O Comunica PJE expõe uma API interna em /api/consulta/... (Angular faz GET)
+    # Sem auth publica, mas o endpoint aspx pode responder com cookies/JSF
+    api_urls = [
+        f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}",
+        f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}&format=json",
+    ]
+    for api_url in api_urls:
+        try:
+            req = urllib.request.Request(
+                api_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (LexFlow/2.5)",
+                    "Accept": "application/json,text/html",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                raw = resp.read().decode("utf-8", errors="ignore")
+                if "json" in ct and raw.strip().startswith(("{", "[")):
+                    import json as _json
+                    data = _json.loads(raw)
+                    if isinstance(data, list):
+                        out = []
+                        for item in data:
+                            cnj_raw = item.get("numeroProcesso") or item.get("processo") or item.get("cnj") or ""
+                            if not cnj_raw:
+                                continue
+                            cnj_fmt = normalize_cnj(cnj_raw)
+                            if not cnj_fmt:
+                                continue
+                            out.append({
+                                "cnj": cnj_fmt,
+                                "date": item.get("dataDisponibilizacao") or item.get("data") or "",
+                                "title": item.get("tipoComunicacao") or item.get("tipo") or "Publicacao",
+                                "raw": str(item),
+                            })
+                        if out:
+                            return out
+        except Exception:
+            continue
+    return []
+
+
+
 def scraper_pje(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> list:
     """Consulta o Comunica PJE por OAB e retorna lista de publicacoes."""
     if not numero_oab:
@@ -239,6 +286,17 @@ def scraper_pje(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> list:
         f"&numeroOab={urllib.parse.quote(numero_oab)}"
         f"&ufOab={urllib.parse.quote(uf)}"
     )
+    # Tenta primeiro a API JSON do Comunica PJE (sem dependencia de JS no client).
+    # Fallback para o HTML (SPA) se a API nao responder.
+    pubs = _scraper_pje_api(numero_oab, uf, sigla_tribunal, timeout=timeout)
+    if pubs:
+        for p in pubs:
+            p["url"] = url
+            p["tribunal"] = sigla_tribunal
+            p["oab"] = f"{uf} {numero_oab}"
+        return pubs
+
+    # Fallback: HTML (SPA renderiza no client, entao quase sempre vem vazio)
     try:
         req = urllib.request.Request(
             url,
@@ -322,11 +380,12 @@ class MonitoringWorker(threading.Thread):
             out = []
             for r in rows:
                 parsed = _parse_oab(r["oab"] or "")
-                if parsed["numero"] and parsed["uf"]:
+                # Aceita OABs sem UF parseada (usa RJ como padrao)
+                if parsed["numero"]:
                     out.append({
                         "user_id": r["user_id"],
                         "oab_num": parsed["numero"],
-                        "oab_uf": parsed["uf"],
+                        "oab_uf": parsed["uf"] or "RJ",
                         "oab_text": r["oab"],
                         "user_name": r["name"],
                     })

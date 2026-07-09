@@ -1651,6 +1651,7 @@
         email: fd.get('email'),
         role: fd.get('role'),
         oab: fd.get('oab') || null,
+        oab_uf: fd.get('oab_uf') || null,
         phone: fd.get('phone') || null,
       };
       if (fd.get('password')) data.password = fd.get('password');
@@ -1669,7 +1670,20 @@
           h('option', { value: 'Paralegal', selected: u && u.role === 'Paralegal' }, 'Paralegal'),
           h('option', { value: 'Estagiario', selected: u && u.role === 'Estagiario' }, 'Estagiario')
         )),
-        h('div', { class: 'form-group' }, h('label', null, 'OAB'), h('input', { type: 'text', name: 'oab', value: (u && u.oab) || '' }))
+        h('div', { class: 'form-group' },
+          h('label', null, 'OAB'),
+          h('div', { class: 'form-row-inline', style: { gap: '8px' } },
+            h('input', { type: 'text', name: 'oab', placeholder: 'Numero', value: (u && u.oab) || '', style: { flex: '1' } }),
+            (() => {
+              const ufs = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+              const curUf = (u && u.oab_uf) || '';
+              return h('select', { name: 'oab_uf', style: { maxWidth: '90px' } },
+                h('option', { value: '' }, 'UF'),
+                ...ufs.map(uf => h('option', { value: uf, selected: uf === curUf }, uf))
+              );
+            })()
+          )
+        )
       ),
       h('div', { class: 'form-group' }, h('label', null, 'Telefone'), h('input', { type: 'text', name: 'phone', value: (u && u.phone) || '' })),
       h('div', { class: 'form-group' }, h('label', null, isEdit ? 'Nova senha (deixe em branco para manter)' : 'Senha inicial'),
@@ -2107,13 +2121,15 @@
       )
     );
 
-    return h('div', { class: 'kanban-page' },
-      h('div', { class: 'page-header' },
-        h('h1', null, '🎯 Kanban de Tarefas'),
-        h('p', { class: 'page-subtitle' }, 'Arraste os cards entre as colunas para reagendar')
-      ),
-      h('div', { class: 'kanban-board' },
-        KANBAN_COLUMNS.map(column)
+    return AppShell('Kanban de Tarefas',
+      h('div', { class: 'kanban-page' },
+        h('div', { class: 'page-header' },
+          h('h1', null, '🎯 Kanban de Tarefas'),
+          h('p', { class: 'page-subtitle' }, 'Arraste os cards entre as colunas para reagendar')
+        ),
+        h('div', { class: 'kanban-board' },
+          KANBAN_COLUMNS.map(column)
+        )
       )
     );
   }

@@ -602,6 +602,16 @@ def dispatch(handler, method, path):
     # Try static match first
     fn = ROUTES.get((method, path))
     if fn:
+        try:
+            nparams = len(inspect.signature(fn).parameters)
+        except Exception:
+            nparams = 1
+        if nparams >= 2:
+            if method in ("POST", "PUT", "PATCH"):
+                body = read_body(handler)
+            else:
+                body = None
+            return fn(handler, body)
         return fn(handler)
 
     # Pattern routes for /api/{resource}/<id>
@@ -691,8 +701,8 @@ def auth_register(handler):
     uid = str(uuid.uuid4())
     now = datetime.datetime.now().isoformat(timespec="seconds")
     conn.execute(
-        "INSERT INTO users(id,name,email,password,role,oab,phone,created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (uid, name, email, hash_pwd(password), role, oab, phone, now),
+        "INSERT INTO users(id,name,email,password,role,oab,oab_uf,phone,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (uid, name, email, hash_pwd(password), role, oab, oab_uf, phone, now),
     )
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO sessions(token,user_id,created_at) VALUES (?,?,?)", (token, uid, now))
@@ -1023,6 +1033,7 @@ def users_create(handler):
     password = body.get("password") or "123456"
     role = (body.get("role") or "Advogado").strip()
     oab = (body.get("oab") or "").strip() or None
+    oab_uf = (body.get("oab_uf") or "").strip().upper() or None
     phone = (body.get("phone") or "").strip() or None
     if not name or not email:
         return json_response(handler, 400, {"error": "Nome e email sao obrigatorios."})
@@ -1043,7 +1054,7 @@ def users_create(handler):
     )
     audit(conn, user["id"], "create", "users", uid, after={"name": name, "email": email, "role": role})
     conn.commit()
-    row = conn.execute("SELECT id,name,email,role,oab,phone,created_at FROM users WHERE id=?", (uid,)).fetchone()
+    row = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,created_at FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     return json_response(handler, 200, serialize_row(row))
 
@@ -1060,10 +1071,14 @@ def users_update(handler, uid):
         conn.close()
         return json_response(handler, 404, {"error": "Não encontrado."})
     sets, vals = [], []
-    for f in ("name", "email", "role", "oab", "phone"):
+    for f in ("name", "email", "role", "oab", "oab_uf", "phone"):
         if f in body:
-            sets.append(f"{f}=?")
-            vals.append(body[f] or None)
+            if f == "oab_uf" and body[f]:
+                sets.append(f"{f}=?")
+                vals.append(str(body[f]).strip().upper() or None)
+            else:
+                sets.append(f"{f}=?")
+                vals.append(body[f] or None)
     if body.get("password"):
         if len(body["password"]) < 6:
             conn.close()
