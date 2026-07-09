@@ -272,14 +272,31 @@ def _parse_pje_html(html: str) -> list:
 
 
 
-def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int = 30) -> list:
-    """Tenta a API publica do Comunica PJE (JSON). Retorna [] se falhar."""
-    # O Comunica PJE expõe uma API interna em /api/consulta/... (Angular faz GET)
+def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int = 30,
+                       numero_processo: str = "") -> list:
+    """Tenta a API publica do Comunica PJE (JSON). Retorna [] se falhar.
+
+    numero_oab: numero da OAB (somente digitos) para busca por advogado.
+    numero_processo: CNJ (somente digitos) para busca por processo especifico.
+    Pelo menos UM dos dois precisa ser fornecido.
+    """
+    # O Comunica PJE expoe uma API interna em /api/consulta/... (Angular faz GET)
     # Sem auth publica, mas o endpoint aspx pode responder com cookies/JSF
-    api_urls = [
-        f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}",
-        f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}&format=json",
-    ]
+    api_urls = []
+    if numero_processo:
+        api_urls.append(
+            f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroProcesso={urllib.parse.quote(numero_processo)}&format=json"
+        )
+        api_urls.append(
+            f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroProcesso={urllib.parse.quote(numero_processo)}"
+        )
+    if numero_oab:
+        api_urls.append(
+            f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}"
+        )
+        api_urls.append(
+            f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}&format=json"
+        )
     for api_url in api_urls:
         try:
             req = urllib.request.Request(
@@ -350,7 +367,7 @@ def scraper_pje(numero_processo: str = "", numero_oab: str = "", uf: str = "RJ",
     url = f"{COMUNICA_PJE_URL}?{qs}"
     # Tenta primeiro a API JSON do Comunica PJE (sem dependencia de JS no client).
     # Fallback para o HTML (SPA) se a API nao responder.
-    pubs = _scraper_pje_api(numero_oab, uf, sigla_tribunal, timeout=timeout)
+    pubs = _scraper_pje_api(numero_oab, uf, sigla_tribunal, timeout=timeout, numero_processo=numero_processo if numero_processo else "")
     if pubs:
         for p in pubs:
             p["url"] = url
@@ -432,8 +449,8 @@ def scraper_pje_for_case(cnj: str, oab_num: str = "", oab_uf: str = "RJ", timeou
     url = f"{COMUNICA_PJE_URL}?siglaTribunal={urllib.parse.quote(sigla)}&numeroProcesso={urllib.parse.quote(digits)}"
     out["url"] = url
     
-    # Primeiro tenta a API JSON
-    pubs = _scraper_pje_api(digits, oab_uf, sigla, timeout=timeout)
+    # Primeiro tenta a API JSON (passando o CNJ para busca por processo)
+    pubs = _scraper_pje_api(oab_num, oab_uf, sigla, timeout=timeout, numero_processo=digits)
     if pubs:
         for p in pubs:
             p["url"] = url

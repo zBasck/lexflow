@@ -907,7 +907,8 @@
               : h('table', { class: 'table' },
                   h('thead', null, h('tr', null, h('th', null, 'Documento'), h('th', null, 'Categoria'), h('th', null, 'Data'), h('th', null, 'Tam.'))),
                   h('tbody', null, ...caseDocs.map(d => h('tr', null,
-                    h('td', null, h('div', { class: 'strong' }, d.title), d.notes ? h('div', { class: 'small muted' }, d.notes) : null),
+                    h('td', null, h('div', { class: 'strong' }, d.title), d.notes ? h('div', { class: 'small muted' }, d.notes) : null,
+                      d.path ? h('div', null, h('a', { href: d.path, target: '_blank', rel: 'noopener', class: 'small' }, '📎 ' + (d.original_name || 'abrir arquivo'))) : null),
                     h('td', null, badge(d.category || '-', 'gold')),
                     h('td', { class: 'small' }, fmtDate(d.date)),
                     h('td', { class: 'small muted' }, d.size || '-'),
@@ -927,6 +928,18 @@
             h('div', { class: 'card-header' },
               h('h3', null, 'Linha do tempo'),
               h('div', { style: 'display:flex;gap:6px' },
+                h('button', { class: 'btn btn-sm', onclick: async () => {
+                    try {
+                      toast('Sincronizando Comunica PJE...', 'info');
+                      const r = await API.req('POST', '/api/cases/' + cid + '/monitor/run', {});
+                      const pf = r.pubs_found || 0, ins = r.inserted || 0;
+                      let msg = 'Comunica PJE: ' + pf + ' publicacao(oes) encontrada(s), ' + ins + ' nova(s)';
+                      if (r.auto_filled && Object.keys(r.auto_filled).length) msg += ' | preenchido: ' + Object.keys(r.auto_filled).join(', ');
+                      toast(msg, ins > 0 ? 'ok' : 'info');
+                      await loadAll();
+                      render();
+                    } catch (e) { toast('Erro: ' + e.message, 'err'); }
+                  }, title: 'Buscar publicacoes deste processo no Comunica PJE' }, '🔄 Sync PJE'),
                 h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento'),
                 h('button', { class: 'btn btn-sm', id: 'btn-monitor-case', onclick: onToggleMonitor, style: 'background:#f1f5f9;color:#1e293b;border:1px solid #cbd5e1' }, '🔔 Monitorar...')
               )
@@ -1106,24 +1119,53 @@
   }
 
   function openDocumentModal(caseId) {
-    const m = h('form', { id: 'doc-form', onsubmit: async (e) => {
+    const m = h('form', { id: 'doc-form', enctype: 'multipart/form-data', onsubmit: async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const file = fd.get('file');
       try {
+        let filePath = null, fileSize = fd.get('size') || '', mime = null, origName = null;
+        // Se tem arquivo selecionado, faz upload via /api/upload
+        if (file && file.size > 0) {
+          const upFd = new FormData();
+          upFd.append('file', file);
+          const upR = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + S.token },
+            body: upFd,
+          });
+          if (!upR.ok) {
+            const err = await upR.json().catch(() => ({}));
+            throw new Error(err.error || 'Falha no upload (HTTP ' + upR.status + ')');
+          }
+          const up = await upR.json();
+          filePath = up.path;
+          mime = up.mime;
+          origName = up.name;
+          fileSize = (up.size < 1024 ? up.size + ' B' : up.size < 1048576 ? Math.round(up.size/1024) + ' KB' : (up.size/1048576).toFixed(2) + ' MB');
+        }
         await API.post('/api/documents', {
           title: fd.get('title'),
           case_id: caseId || fd.get('case_id') || null,
           category: fd.get('category'),
           type: fd.get('type'),
-          size: fd.get('size'),
+          size: fileSize,
           date: fd.get('date') || todayISO(),
           responsible_id: S.user.id,
           notes: fd.get('notes'),
+          path: filePath,
+          mime_type: mime,
+          original_name: origName,
         });
-        await loadAll(); closeModal(); render(); toast('Documento adicionado', 'success');
+        await loadAll(); closeModal(); render(); toast(filePath ? 'Documento enviado e cadastrado' : 'Documento adicionado', 'success');
       } catch (err) { toast(err.message, 'error'); }
     }},
       h('div', { class: 'form-group' }, h('label', null, 'Titulo *'), h('input', { type: 'text', name: 'title', required: true })),
+      h('div', { class: 'form-group' },
+        h('label', null, 'Arquivo (opcional)'),
+        h('input', { type: 'file', name: 'file' }),
+        h('div', { class: 'small muted' }, 'Selecione um arquivo do seu computador (PDF, DOCX, imagens, etc). Ate 25 MB. Se nao selecionar, o documento fica apenas como referencia.')
+      ),
       !caseId ? h('div', { class: 'form-group' }, h('label', null, 'Caso'), h('select', { name: 'case_id' },
         h('option', { value: '' }, 'Sem caso'),
         ...S.data.cases.map(c => h('option', { value: c.id }, c.title))
@@ -1786,7 +1828,7 @@
           const caseCount = S.data.cases.filter(c => c.responsible_id === u.id).length;
           const taskCount = S.data.tasks.filter(t => t.responsible_id === u.id && t.status === 'pendente').length;
           return h('div', { class: 'client-card' },
-            h('div', { class: 'client-avatar' }, initials(u.name)),
+            h('div', { class: 'client-avatar' }, u.photo ? h('img', { src: u.photo, style: { width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' } }) : initials(u.name)),
             h('div', { class: 'client-name' }, u.name),
             h('div', { class: 'client-meta' }, badge(u.role, u.role === 'Socio' ? 'gold' : 'info')),
             h('div', { class: 'small muted' }, u.oab || 'Sem OAB'),
@@ -1819,12 +1861,40 @@
         phone: fd.get('phone') || null,
       };
       if (fd.get('password')) data.password = fd.get('password');
+      const photoFile = fd.get('photo');
       try {
+        let userId = u && u.id;
         if (isEdit) await API.put('/api/users/' + u.id, data);
-        else { data.password = data.password || '123456'; await API.post('/api/users', data); }
+        else {
+          data.password = data.password || '123456';
+          const r = await API.post('/api/users', data);
+          userId = (r && r.id) || userId;
+        }
+        // Upload de foto (se houver arquivo selecionado)
+        if (photoFile && photoFile.size > 0 && userId) {
+          const upFd = new FormData();
+          upFd.append('photo', photoFile);
+          const upR = await fetch('/api/users/' + userId + '/photo', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + S.token },
+            body: upFd,
+          });
+          if (!upR.ok) {
+            const e = await upR.json().catch(() => ({}));
+            toast('Membro salvo, mas foto falhou: ' + (e.error || upR.status), 'error');
+          }
+        }
         await loadAll(); closeModal(); render(); toast(isEdit ? 'Membro atualizado' : 'Membro adicionado', 'success');
       } catch (err) { toast(err.message, 'error'); }
     }},
+      h('div', { class: 'form-group' },
+        h('label', null, 'Foto de perfil'),
+        h('div', { class: 'form-row-inline', style: { alignItems: 'center', gap: '10px' } },
+          (u && u.photo) ? h('img', { src: u.photo, style: { width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--line-2)' } }) : h('div', { class: 'user-avatar-placeholder', style: { width: '48px', height: '48px', borderRadius: '50%', background: 'var(--bg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' } }, '👤'),
+          h('input', { type: 'file', name: 'photo', accept: 'image/*', style: { flex: '1' } })
+        ),
+        h('div', { class: 'small muted' }, 'JPG/PNG/WebP. Ate 2MB. Opcional.')
+      ),
       h('div', { class: 'form-group' }, h('label', null, 'Nome *'), h('input', { type: 'text', name: 'name', required: true, value: (u && u.name) || '' })),
       h('div', { class: 'form-group' }, h('label', null, 'E-mail *'), h('input', { type: 'email', name: 'email', required: true, value: (u && u.email) || '' })),
       h('div', { class: 'form-row' },
@@ -1981,6 +2051,104 @@
         )
       ),
       h('div', { class: 'card' },
+        h('div', { class: 'card-header' }, h('h3', null, '⚙ Preferencias do sistema')),
+        h('form', { onsubmit: async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          const data = {
+            date_format: fd.get('date_format'),
+            currency: fd.get('currency'),
+            timezone: fd.get('timezone'),
+            language: fd.get('language'),
+            work_hours_start: fd.get('work_hours_start'),
+            work_hours_end: fd.get('work_hours_end'),
+            days_until_deadline_warning: parseInt(fd.get('days_until_deadline_warning')) || 7,
+            auto_archive_finished_cases: fd.get('auto_archive_finished_cases') === 'on',
+            default_case_priority: fd.get('default_case_priority'),
+            enable_public_share: fd.get('enable_public_share') === 'on',
+          };
+          try {
+            await API.post('/api/settings', data);
+            toast('Preferencias salvas', 'success');
+          } catch (err) { toast(err.message, 'error'); }
+        }},
+          h('div', { class: 'form-row' },
+            h('div', { class: 'form-group' }, h('label', null, 'Formato de data'),
+              h('select', { name: 'date_format' },
+                h('option', { value: 'DD/MM/YYYY', selected: set.date_format === 'DD/MM/YYYY' }, 'DD/MM/AAAA'),
+                h('option', { value: 'MM/DD/YYYY', selected: set.date_format === 'MM/DD/YYYY' }, 'MM/DD/AAAA'),
+                h('option', { value: 'YYYY-MM-DD', selected: set.date_format === 'YYYY-MM-DD' }, 'AAAA-MM-DD')
+              )
+            ),
+            h('div', { class: 'form-group' }, h('label', null, 'Moeda'),
+              h('select', { name: 'currency' },
+                h('option', { value: 'BRL', selected: !set.currency || set.currency === 'BRL' }, 'BRL (R$)'),
+                h('option', { value: 'USD', selected: set.currency === 'USD' }, 'USD ($)'),
+                h('option', { value: 'EUR', selected: set.currency === 'EUR' }, 'EUR')
+              )
+            )
+          ),
+          h('div', { class: 'form-row' },
+            h('div', { class: 'form-group' }, h('label', null, 'Fuso horario'),
+              h('select', { name: 'timezone' },
+                h('option', { value: 'America/Sao_Paulo', selected: !set.timezone || set.timezone === 'America/Sao_Paulo' }, 'Brasilia (UTC-3)'),
+                h('option', { value: 'America/Manaus', selected: set.timezone === 'America/Manaus' }, 'Manaus (UTC-4)'),
+                h('option', { value: 'America/Belem', selected: set.timezone === 'America/Belem' }, 'Belem (UTC-3)'),
+                h('option', { value: 'America/Recife', selected: set.timezone === 'America/Recife' }, 'Recife (UTC-3)'),
+                h('option', { value: 'America/Rio_Branco', selected: set.timezone === 'America/Rio_Branco' }, 'Rio Branco (UTC-5)')
+              )
+            ),
+            h('div', { class: 'form-group' }, h('label', null, 'Idioma'),
+              h('select', { name: 'language' },
+                h('option', { value: 'pt-BR', selected: !set.language || set.language === 'pt-BR' }, 'Portugues (BR)'),
+                h('option', { value: 'en', selected: set.language === 'en' }, 'English')
+              )
+            )
+          ),
+          h('div', { class: 'form-row' },
+            h('div', { class: 'form-group' }, h('label', null, 'Inicio expediente'),
+              h('input', { type: 'time', name: 'work_hours_start', value: set.work_hours_start || '08:00' })
+            ),
+            h('div', { class: 'form-group' }, h('label', null, 'Fim expediente'),
+              h('input', { type: 'time', name: 'work_hours_end', value: set.work_hours_end || '18:00' })
+            )
+          ),
+          h('div', { class: 'form-row' },
+            h('div', { class: 'form-group' }, h('label', null, 'Alertar prazo em (dias)'),
+              h('input', { type: 'number', name: 'days_until_deadline_warning', min: '1', max: '60', value: set.days_until_deadline_warning || '7' })
+            ),
+            h('div', { class: 'form-group' }, h('label', null, 'Prioridade padrao de caso'),
+              h('select', { name: 'default_case_priority' },
+                h('option', { value: 'baixa', selected: set.default_case_priority === 'baixa' }, 'Baixa'),
+                h('option', { value: 'media', selected: !set.default_case_priority || set.default_case_priority === 'media' }, 'Media'),
+                h('option', { value: 'alta', selected: set.default_case_priority === 'alta' }, 'Alta'),
+                h('option', { value: 'urgente', selected: set.default_case_priority === 'urgente' }, 'Urgente')
+              )
+            )
+          ),
+          h('div', { class: 'form-row-inline' },
+            h('label', null, h('input', { type: 'checkbox', name: 'auto_archive_finished_cases', checked: set.auto_archive_finished_cases === '1' || set.auto_archive_finished_cases === true }), ' Arquivar automaticamente casos concluidos'),
+            h('label', null, h('input', { type: 'checkbox', name: 'enable_public_share', checked: set.enable_public_share === '1' || set.enable_public_share === true }), ' Permitir link publico para clientes')
+          ),
+          h('button', { type: 'submit', class: 'btn btn-primary', style: { marginTop: '8px' } }, 'Salvar preferencias')
+        )
+      ),
+      h('div', { class: 'card' },
+        h('div', { class: 'card-header' }, h('h3', null, '🔔 Notificacoes e sons')),
+        h('p', { class: 'small muted' }, 'Personalize como o sistema avisa sobre prazos, novas publicacoes e atualizacoes.'),
+        h('div', { class: 'form-row-inline' },
+          h('label', null, h('input', { type: 'checkbox', id: 'notif-sound-new', checked: S.settings && S.settings['notif.sound_new'] !== '0' }), ' Som ao receber nova publicacao'),
+          h('label', null, h('input', { type: 'checkbox', id: 'notif-sound-deadline', checked: S.settings && S.settings['notif.sound_deadline'] !== '0' }), ' Som ao aproximar prazo')
+        ),
+        h('button', { class: 'btn btn-primary', onclick: () => {
+          const payload = {
+            'notif.sound_new': document.getElementById('notif-sound-new').checked ? '1' : '0',
+            'notif.sound_deadline': document.getElementById('notif-sound-deadline').checked ? '1' : '0',
+          };
+          API.req('POST', '/api/settings', payload).then(() => toast('Notificacoes salvas', 'success')).catch(e => toast(e.message, 'error'));
+        }, style: { marginTop: '8px' } }, 'Salvar notificacoes')
+      ),
+      h('div', { class: 'card' },
         h('div', { class: 'card-header' }, h('h3', null, '🔔 Monitoramento (Comunica PJE)')),
         h('div', { class: 'modal-info' },
           h('strong', null, 'Como funciona:'),
@@ -2009,7 +2177,7 @@
         ),
         h('div', { style: { marginTop: '12px' } },
           h('button', { class: 'btn btn-primary', onclick: () => saveMonSettings() }, 'Salvar monitoramento'),
-          h('button', { class: 'btn btn-ghost', style: { marginLeft: '8px' }, onclick: () => goTo('monitoring') }, 'Ir para pagina de Monitoramento')
+          h('button', { class: 'btn btn-secondary', style: { marginLeft: '8px' }, onclick: () => go('monitoring') }, 'Ir para pagina de Monitoramento')
         )
       )
     );
@@ -2497,7 +2665,6 @@
           h('h1', null, '🔔 Monitoramento de Processos'),
           h('p', { class: 'page-subtitle' }, 'Comunica PJE - busca por numero de processo (CNJ) + monitoramento por OAB'),
           h('div', { class: 'mon-header-actions' },
-            h('button', { class: 'btn-secondary', onclick: () => goTo('settings') }, '⚙ Configurações'),
             h('button', { class: 'btn-secondary', onclick: async () => { await loadAll(); render(); toast('Atualizado', 'ok'); } }, '🔄 Atualizar')
           )
         ),
@@ -2598,6 +2765,7 @@
         ),
         h('div', { class: 'modal-footer' },
           h('button', { class: 'btn-secondary', onclick: () => close() }, 'Cancelar'),
+          h('button', { class: 'btn-secondary', onclick: () => { const m = document.getElementById('modal-mon-settings'); if (m && m.parentNode) m.parentNode.removeChild(m); goTo('monitoring'); } }, 'Ir para Monitoramento'),
           h('button', { class: 'btn-primary', onclick: async () => { await saveMonSettings(); } }, 'Salvar')
         )
       )
@@ -2634,7 +2802,9 @@
     try {
       await API.req('POST', '/api/monitoring/settings', body);
       toast('Configurações salvas', 'ok');
-      document.getElementById('modal-mon-settings').remove();
+      // Fecha o modal se existir (sem quebrar se ja foi removido)
+      const m = document.getElementById('modal-mon-settings');
+      if (m && m.parentNode) m.parentNode.removeChild(m);
     } catch (e) {
       toast('Erro ao salvar: ' + e.message, 'err');
     }

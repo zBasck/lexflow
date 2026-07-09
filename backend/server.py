@@ -349,6 +349,10 @@ def init_db():
     # Adicionar coluna oab_uf em users (migration idempotente)
     for col_sql in (
         "ALTER TABLE users ADD COLUMN oab_uf TEXT",
+        "ALTER TABLE users ADD COLUMN photo TEXT",
+        "ALTER TABLE documents ADD COLUMN path TEXT",
+        "ALTER TABLE documents ADD COLUMN mime_type TEXT",
+        "ALTER TABLE documents ADD COLUMN original_name TEXT",
     ):
         try:
             cur.execute(col_sql)
@@ -676,6 +680,15 @@ def dispatch(handler, method, path):
         if fn:
             return fn(handler, m.group(1))
 
+
+    # Pattern especifico para DELETE /api/cases/{id}/folder (passa folder_id via body)
+    m = re.match(r"^/api/cases/([\w\-]+)/folder$", path)
+    if m and method == "DELETE":
+        fn = ROUTES.get(("DELETE", "/api/cases/{id}/folder"))
+        if fn:
+            body = read_body(handler)
+            return fn(handler, m.group(1), body)
+
     # Pattern generico /api/{resource}/{id}/{action} (3 segmentos)
     m = re.match(r"^/api/([\w\-]+)/([\w\-]+)/(\w+)$", path)
     if m:
@@ -699,6 +712,117 @@ def dispatch(handler, method, path):
                 return fn(handler)
 
     not_found(handler)
+
+
+# ---- UPLOAD ----
+
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+def _parse_multipart(handler, max_bytes=MAX_UPLOAD_BYTES):
+    """Decodifica um body multipart/form-data. Retorna (fields, files)."""
+    ctype = (handler.headers.get("Content-Type") or "").lower()
+    if "multipart/form-data" not in ctype:
+        return {}, {}
+    try:
+        from email.parser import BytesParser
+        from email.policy import default as email_default
+        length = int(handler.headers.get("Content-Length") or 0)
+        if length <= 0 or length > max_bytes:
+            return {}, {}
+        raw = handler.rfile.read(length)
+        msg = BytesParser(policy=email_default).parsebytes(
+            b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + raw
+        )
+    except Exception:
+        return {}, {}
+    fields, files = {}, {}
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        cd = part.get("Content-Disposition", "")
+        if not cd:
+            continue
+        nm = part.get_param("name", header="Content-Disposition")
+        fn = part.get_param("filename", header="Content-Disposition")
+        data = part.get_payload(decode=True) or b""
+        if fn:
+            files[nm or "file"] = {
+                "filename": fn,
+                "data": data,
+                "content_type": part.get_content_type(),
+            }
+        else:
+            try:
+                fields[nm or ""] = data.decode("utf-8", errors="replace")
+            except Exception:
+                fields[nm or ""] = ""
+    return fields, files
+
+
+def upload_file(handler, body):
+    """POST /api/upload - recebe multipart e salva em data/uploads/. Retorna {path, name, size, mime}."""
+    user = require_auth(handler)
+    if not user:
+        return
+    fields, files = _parse_multipart(handler)
+    if not files:
+        return json_response(handler, 400, {"error": "nenhum arquivo no body (esperado multipart/form-data)"})
+    f = next(iter(files.values()))
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", f["filename"] or "arquivo")
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = f"{stamp}_{secrets.token_hex(4)}_{safe_name}"
+    full = os.path.join(UPLOAD_DIR, name)
+    try:
+        with open(full, "wb") as fp:
+            fp.write(f["data"])
+    except Exception as e:
+        return json_response(handler, 500, {"error": "falha ao salvar arquivo", "detail": str(e)})
+    rel = os.path.relpath(full, os.path.dirname(__file__) + "/..").replace("\\", "/")
+    return json_response(handler, 200, {
+        "ok": True,
+        "path": rel,
+        "name": safe_name,
+        "size": len(f["data"]),
+        "mime": f["content_type"],
+    })
+
+
+def users_set_photo(handler, uid):
+    """POST /api/users/{id}/photo - multipart com campo 'photo' (file)."""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user) and user["id"] != uid:
+        return json_response(handler, 403, {"error": "forbidden"})
+    fields, files = _parse_multipart(handler)
+    if "photo" not in files:
+        return json_response(handler, 400, {"error": "campo 'photo' obrigatorio"})
+    f = files["photo"]
+    if len(f["data"]) > 2 * 1024 * 1024:
+        return json_response(handler, 400, {"error": "foto maior que 2MB"})
+    ext = (os.path.splitext(f["filename"])[1] or ".jpg").lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        return json_response(handler, 400, {"error": "extensao nao suportada (jpg/png/webp/gif)"})
+    safe_name = f"user_{uid}_{secrets.token_hex(4)}{ext}"
+    full = os.path.join(UPLOAD_DIR, safe_name)
+    try:
+        with open(full, "wb") as fp:
+            fp.write(f["data"])
+    except Exception as e:
+        return json_response(handler, 500, {"error": "falha ao salvar", "detail": str(e)})
+    rel = os.path.relpath(full, os.path.dirname(__file__) + "/..").replace("\\", "/")
+    conn = db()
+    conn.execute("UPDATE users SET photo = ? WHERE id = ?", (rel, uid))
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True, "photo": rel})
+
+
+route("POST", "/api/upload", upload_file)
+route("POST", "/api/users/{id}/photo", users_set_photo)
 
 
 # ---- AUTH ----
@@ -1049,7 +1173,7 @@ route("PUT",    "/api/transactions/{id}", make_update("transactions", ["type","d
 route("DELETE", "/api/transactions/{id}", make_delete("transactions"))
 
 route("GET",    "/api/documents", make_list("documents", "date DESC"))
-route("POST",   "/api/documents", make_create("documents", ["title","case_id","category","type","size","date","responsible_id","notes"]))
+route("POST",   "/api/documents", make_create("documents", ["title","case_id","category","type","size","date","responsible_id","notes","path","mime_type","original_name"]))
 route("PUT",    "/api/documents/{id}", make_update("documents", ["title","case_id","category","type","size","date","responsible_id","notes"]))
 route("DELETE", "/api/documents/{id}", make_delete("documents"))
 
@@ -1098,7 +1222,7 @@ def users_create(handler):
     )
     audit(conn, user["id"], "create", "users", uid, after={"name": name, "email": email, "role": role})
     conn.commit()
-    row = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,created_at FROM users WHERE id=?", (uid,)).fetchone()
+    row = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,photo,created_at FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     return json_response(handler, 200, serialize_row(row))
 
@@ -1134,7 +1258,7 @@ def users_update(handler, uid):
         conn.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", vals)
         audit(conn, user["id"], "update", "users", uid, before=dict(before), after=body)
         conn.commit()
-    row = conn.execute("SELECT id,name,email,role,oab,phone,created_at FROM users WHERE id=?", (uid,)).fetchone()
+    row = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,photo,created_at FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     return json_response(handler, 200, serialize_row(row))
 
@@ -1805,11 +1929,20 @@ def monitor_run_now(handler, case_id, body=None):
             "url": res.get("url", ""),
             "pubs": sample_pubs[:5],
         }
-        # update last_check_at
+        # update last_check_at (atualiza o registro de monitoring deste caso)
         if worker:
-            worker._update_monitoring_state(case_id,
-                last_check_at=datetime.datetime.now().isoformat(timespec="seconds"),
-                error_count=0, last_error=None)
+            try:
+                _wconn = worker._conn()
+                _wconn.execute(
+                    "UPDATE monitoring SET last_check_at = ?, error_count = 0, last_error = NULL, updated_at = ? WHERE case_id = ?",
+                    (datetime.datetime.now().isoformat(timespec="seconds"),
+                     datetime.datetime.now().isoformat(timespec="seconds"),
+                     case_id),
+                )
+                _wconn.commit()
+                _wconn.close()
+            except Exception:
+                pass
         audit(user["id"], "monitor_run", "case", case_id, None,
               {"pubs_found": len(pubs), "inserted": total_inserted, "auto_filled": auto_filled})
     finally:
