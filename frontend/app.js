@@ -455,30 +455,27 @@
     );
 
     const totalByArea = d.by_area.reduce((s, x) => s + x.total, 0) || 1;
-    const areaColors = ['#C9A96E', '#0F1B3D', '#2d6fbf', '#1f8a5b', '#c98c1d', '#b8364d', '#6c5ce7'];
-    const donutBg = (() => {
-      let acc = 0;
-      return 'conic-gradient(' + d.by_area.map((x, i) => {
-        const start = (acc / totalByArea) * 360;
-        acc += x.total;
-        const end = (acc / totalByArea) * 360;
-        return areaColors[i % areaColors.length] + ' ' + start + 'deg ' + end + 'deg';
-      }).join(', ') + ')';
-    })();
-    const donut = h('div', { class: 'donut-wrap' },
-      h('div', { class: 'donut', style: { background: donutBg } },
-        h('div', { class: 'donut-center' },
-          h('div', { class: 'num' }, totalByArea),
-          h('div', { class: 'lbl' }, 'Casos')
-        )
-      ),
-      h('div', { class: 'donut-legend' },
-        ...d.by_area.map((x, i) => h('div', { class: 'donut-legend-row' },
-          h('span', { class: 'swatch', style: { background: areaColors[i % areaColors.length] } }),
-          h('span', { class: 'name' }, x.area),
-          h('span', { class: 'val' }, x.total)
-        ))
-      )
+    const areaColors = ['#0F1B3D', '#C9A96E', '#2d6fbf', '#1f8a5b', '#c98c1d', '#b8364d', '#6c5ce7', '#a65a8a', '#5d7a8a'];
+    // BARRINAS HORIZONTAIS estilo dashboard moderno
+    const barras = h('div', { class: 'bars-list', style: { display: 'flex', flexDirection: 'column', gap: '14px' } },
+      ...d.by_area.map((x, i) => {
+        const pct = Math.round((x.total / totalByArea) * 100);
+        return h('div', null,
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: '4px', fontSize: '13px' } },
+            h('span', { style: { color: 'var(--ink-1)', fontWeight: '500' } }, x.area),
+            h('span', { style: { color: 'var(--ink-2)' } }, x.total + ' (' + pct + '%)')
+          ),
+          h('div', { style: { background: 'var(--bg-3)', borderRadius: '6px', height: '8px', overflow: 'hidden' } },
+            h('div', { style: {
+              background: areaColors[i % areaColors.length],
+              width: pct + '%',
+              height: '100%',
+              borderRadius: '6px',
+              transition: 'width 0.6s ease'
+            } })
+          )
+        );
+      })
     );
 
     return AppShell('Dashboard',
@@ -520,8 +517,11 @@
           )
         ),
         h('div', { class: 'card' },
-          h('div', { class: 'card-header' }, h('h3', null, 'Casos por area')),
-          donut
+          h('div', { class: 'card-header' },
+            h('h3', null, 'Casos por area'),
+            h('div', { class: 'sub' }, totalByArea + ' no total')
+          ),
+          barras
         )
       ),
       h('div', { class: 'grid-1-2', style: { marginTop: '18px' } },
@@ -888,9 +888,23 @@
             ),
             updates.length === 0 ? h('div', { class: 'empty' }, h('p', null, 'Nenhum andamento registrado'))
               : h('div', { class: 'timeline' }, ...updates.map(u => h('div', { class: 'timeline-item' },
-                h('div', { class: 'timeline-date' }, fmtDate(u.date) + ' • ' + (u.type || 'andamento')),
-                h('div', { class: 'timeline-title' }, u.title),
-                u.description ? h('div', { class: 'timeline-desc' }, u.description) : null
+                h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' } },
+                  h('div', { style: { flex: 1 } },
+                    h('div', { class: 'timeline-date' }, fmtDate(u.date) + ' • ' + (u.type || 'andamento')),
+                    h('div', { class: 'timeline-title' }, u.title),
+                    u.description ? h('div', { class: 'timeline-desc' }, u.description) : null
+                  ),
+                  h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 8px', fontSize: '11px' },
+                    onclick: async (e) => {
+                      e.stopPropagation();
+                      if (!confirm('Excluir este andamento?')) return;
+                      try {
+                        await API.req('DELETE', '/api/case-updates/' + u.id);
+                        toast('Andamento excluido', 'success');
+                        render();
+                      } catch (err) { toast(err.message, 'error'); }
+                    } }, '🗑')
+                )
               )))
           ),
           h('div', { class: 'card' },
@@ -1711,6 +1725,36 @@
     let settings = {};
     try { settings = await API.get('/api/settings'); } catch (e) {}
     const set = settings || {};
+
+    // Liga o handler de import de backup apos o DOM estar pronto
+    setTimeout(() => {
+      const fileInput = document.getElementById('import-backup-file');
+      if (fileInput && !fileInput.dataset.bound) {
+        fileInput.dataset.bound = '1';
+        fileInput.addEventListener('change', async (ev) => {
+          const f = ev.target.files && ev.target.files[0];
+          if (!f) return;
+          const statusEl = document.getElementById('import-backup-status');
+          if (!confirm('Importar ' + f.name + '? Apenas socios podem importar. Os registros serao adicionados (sem substituir).')) {
+            ev.target.value = '';
+            return;
+          }
+          if (statusEl) statusEl.textContent = 'Importando...';
+          try {
+            const text = await f.text();
+            const data = JSON.parse(text);
+            const result = await API.post('/api/import', data);
+            const total = Object.values(result.imported || {}).reduce((s, n) => s + n, 0);
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--success)">OK! ' + total + ' registros importados.</span> ' + JSON.stringify(result.imported);
+            toast('Backup importado: ' + total + ' registros', 'success');
+            ev.target.value = '';
+          } catch (err) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">Erro: ' + err.message + '</span>';
+            toast('Erro: ' + err.message, 'error');
+          }
+        });
+      }
+    }, 0);
     const onSave = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -1741,9 +1785,17 @@
         ),
         h('div', { class: 'card' },
           h('div', { class: 'card-header' }, h('h3', null, 'Dados e backup')),
-          h('div', { class: 'mb-2' },
+          h('div', { class: 'mb-3' },
             h('p', { class: 'small muted', style: { marginBottom: '8px' } }, 'Exporte um backup completo do seu banco de dados em formato JSON. O arquivo contem todos os cadastros, casos, tarefas, eventos e transacoes.'),
             h('a', { class: 'btn btn-ghost', href: '/api/export', download: 'lexflow_backup.json', target: '_blank' }, '⬇ Baixar backup JSON')
+          ),
+          h('div', { class: 'mb-3' },
+            h('p', { class: 'small muted', style: { marginBottom: '8px' } }, 'Importe um backup JSON exportado anteriormente. Apenas socios podem importar. Registros novos sao adicionados sem substituir os existentes.'),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+              h('input', { type: 'file', id: 'import-backup-file', accept: 'application/json,.json', style: { display: 'none' } }),
+              h('button', { class: 'btn btn-primary', onclick: () => document.getElementById('import-backup-file').click() }, '⬆ Importar backup'),
+            ),
+            h('div', { id: 'import-backup-status', class: 'small muted', style: { marginTop: '8px' } })
           ),
           h('div', { class: 'mb-2' },
             h('p', { class: 'small muted', style: { marginBottom: '8px' } }, 'O banco de dados SQLite esta salvo em:'),
@@ -1889,7 +1941,8 @@
     const total = trash.clients.length + trash.cases.length + trash.tasks.length;
     const restore = async (kind, id) => {
       try {
-        await API.post('/api/' + kind + '/' + id + '/restore');
+        // kind ja vem no plural (clients/cases/tasks/events/transactions/documents/case_updates)
+        await API.post('/api/trash/' + kind + '/' + id + '/restore');
         await loadAll();
         render();
         toast('Item restaurado', 'success');

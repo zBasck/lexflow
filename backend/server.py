@@ -175,6 +175,7 @@ def init_db():
             password TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'advogado',
             oab TEXT,
+            oab_uf TEXT,
             phone TEXT,
             created_at TEXT NOT NULL
         )""",
@@ -337,6 +338,15 @@ def init_db():
         except Exception:
             pass  # coluna ja existe
 
+    # Adicionar coluna oab_uf em users (migration idempotente)
+    for col_sql in (
+        "ALTER TABLE users ADD COLUMN oab_uf TEXT",
+    ):
+        try:
+            cur.execute(col_sql)
+        except Exception:
+            pass  # coluna ja existe
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cases_deleted ON cases(deleted_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_clients_deleted ON clients(deleted_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks(deleted_at)")
@@ -378,17 +388,17 @@ def seed(conn):
     now = datetime.datetime.now().isoformat(timespec="seconds")
 
     users = [
-        ("helena", "Helena Coutinho", "helena@lexflow.demo", "Sócia", "OAB/SP 123.456", "(11) 98765-4321"),
-        ("rafael", "Rafael Monteiro", "rafael@lexflow.demo", "Advogado Sênior", "OAB/RJ 98.765", "(21) 99887-6655"),
-        ("camila", "Camila Vasconcelos", "camila@lexflow.demo", "Paralegal", None, "(11) 91234-5678"),
+        ("helena", "Helena Coutinho", "helena@lexflow.demo", "Sócia", "OAB/SP 123.456", "SP", "(11) 98765-4321"),
+        ("rafael", "Rafael Monteiro", "rafael@lexflow.demo", "Advogado Sênior", "OAB/RJ 98.765", "RJ", "(21) 99887-6655"),
+        ("camila", "Camila Vasconcelos", "camila@lexflow.demo", "Paralegal", None, None, "(11) 91234-5678"),
     ]
     user_ids = {}
-    for slug, name, email, role, oab, phone in users:
+    for slug, name, email, role, oab, oab_uf, phone in users:
         uid = str(uuid.uuid4())
         user_ids[slug] = uid
         conn.execute(
-            "INSERT INTO users(id,name,email,password,role,oab,phone,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (uid, name, email, hash_pwd("123456"), role, oab, phone, now),
+            "INSERT INTO users(id,name,email,password,role,oab,oab_uf,phone,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (uid, name, email, hash_pwd("123456"), role, oab, oab_uf, phone, now),
         )
 
     clients = [
