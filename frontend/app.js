@@ -2151,7 +2151,7 @@
       h('div', { class: 'mon-row-main' },
         h('div', { class: 'mon-row-title' },
           it.case_title || '(caso removido)',
-          it.responsible_oab ? h('span', { class: 'mon-oab-badge', title: 'OAB do advogado responsavel — publicacoes que citem essa OAB serao inseridas aqui' }, '🔎 OAB/' + it.responsible_oab_uf + ' ' + it.responsible_oab) : null
+          (it.responsible_oab_uf && it.responsible_oab) ? h('span', { class: 'mon-oab-badge', title: 'OAB do advogado responsavel — publicacoes do Comunica PJE que citem essa OAB serao inseridas aqui' }, '🔎 OAB/' + it.responsible_oab_uf + ' ' + it.responsible_oab) : null
         ),
         h('div', { class: 'mon-row-meta' },
           h('span', null, it.cnj || 'sem CNJ'),
@@ -2170,21 +2170,16 @@
           try {
             toast('Sincronizando...', 'info');
             const r = await API.req('POST', '/api/cases/' + it.case_id + '/monitor/run', {});
-            const dj = r.datajud && r.datajud.ok
-              ? 'Datajud OK (' + (r.datajud.inserted || 0) + ' novos)'
-              : ('Datajud: ' + ((r.datajud && r.datajud.error) || 'falhou'));
-            const djeCount = r.dje && r.dje.ok ? (r.dje.inserted || 0) : 0;
-            const djeFound = r.dje && r.dje.ok ? (r.dje.count || 0) : 0;
-            const djePubs = (r.dje && r.dje.pubs) || [];
-            let djeMsg = 'DJe OK (' + djeCount + ' novos de ' + djeFound + ')';
-            if (djePubs.length && djeCount > 0) {
-              djeMsg += ' · ' + djePubs[0].title;
-            } else if (djePubs.length && djeCount === 0) {
-              djeMsg += ' · ja registrado(s)';
-            }
-            toast(dj + ' | ' + djeMsg, r.inserted > 0 ? 'ok' : 'info');
-            if (djePubs.length > 1 && djeCount > 0) {
-              openDjePubsModal(it, djePubs);
+            const pubsFound = r.pubs_found || 0;
+            const inserted = r.inserted || 0;
+            const newCases = r.new_cases || 0;
+            const samplePubs = r.pubs || [];
+            let msg = 'Comunica PJE (' + (r.oab || '?') + '): ' + pubsFound + ' publicacoes encontradas, ' + inserted + ' novas';
+            if (newCases > 0) msg += ', ' + newCases + ' caso(s) criado(s)';
+            if (samplePubs.length && inserted > 0) msg += ' — ' + samplePubs[0].title;
+            toast(msg, inserted > 0 ? 'ok' : 'info');
+            if (samplePubs.length > 1 && inserted > 0) {
+              openPjePubsModal(it, samplePubs);
             }
             await loadAll();
             render();
@@ -2272,11 +2267,11 @@
     ));
   }
 
-  function openDjePubsModal(it, pubs) {
+  function openPjePubsModal(it, pubs) {
     const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } },
       h('div', { class: 'modal-card' },
         h('div', { class: 'modal-header' },
-          h('h2', null, '📰 Publicacoes DJe encontradas'),
+          h('h2', null, '📰 Publicacoes Comunica PJE encontradas'),
           h('button', { class: 'modal-close', onclick: () => close() }, 'x')
         ),
         h('div', { class: 'modal-body' },
@@ -2311,26 +2306,22 @@
           h('button', { class: 'modal-close', onclick: () => close() }, '×')
         ),
         h('div', { class: 'modal-body' },
-          h('div', { class: 'modal-warning' },
-            h('strong', null, '⚠ Sobre a chave do Datajud:'),
+          h('div', { class: 'modal-info' },
+            h('strong', null, '🔎 Monitoramento por OAB (Comunica PJE):'),
             h('br'),
-            'A chave pública padrão "APIKeyPublicaCNJ" tem rate-limit baixo e pode retornar ',
-            h('strong', null, 'HTTP 401 Unauthorized'),
-            ' em produção. Recomendamos solicitar sua chave pessoal gratuita em ',
-            h('a', { href: 'https://datajud.cnj.jus.br', target: '_blank', rel: 'noopener' }, 'datajud.cnj.jus.br'),
-            ' e colar abaixo.'
-          ),
-          h('div', { class: 'form-row' },
-            h('label', null, 'API Key do Datajud (CNJ)'),
-            h('input', { type: 'password', id: 'mon-api-key', placeholder: 'Cole sua chave pessoal ou deixe vazio para usar a padrão' })
+            'O sistema busca publicações automaticamente no ',
+            h('a', { href: 'https://comunica.pje.jus.br', target: '_blank', rel: 'noopener' }, 'Comunica PJE'),
+            ' usando a OAB do advogado responsável pelo caso (configurada em Equipe > Editar advogado). ',
+            'Para cada publicação encontrada, se o CNJ já existir na base, o andamento é inserido no caso correspondente; ',
+            'se não existir, um caso novo é criado automaticamente com a publicação como primeiro andamento. ',
+            'A consulta é pública e não exige chave de API. ',
+            'Exemplo: OAB/RJ 244.384 é pesquisada como ',
+            h('a', { href: 'https://comunica.pje.jus.br/consulta?siglaTribunal=TJRJ&numeroOab=244384&ufOab=RJ', target: '_blank', rel: 'noopener' }, 'TJRJ + 244384 + RJ'),
+            '.'
           ),
           h('div', { class: 'form-row' },
             h('label', null, 'Intervalo padrão (minutos)'),
             h('input', { type: 'number', id: 'mon-interval', min: '5', max: '1440', value: '60' })
-          ),
-          h('div', { class: 'form-row-inline' },
-            h('label', null, h('input', { type: 'checkbox', id: 'mon-dje' }), ' Habilitar DJe (intimações)'),
-            h('label', null, h('input', { type: 'checkbox', id: 'mon-datajud' }), ' Habilitar Datajud (andamentos)'),
           ),
           h('div', { class: 'form-row-inline' },
             h('label', null, h('input', { type: 'checkbox', id: 'mon-desktop' }), ' Notificação nativa do navegador'),
@@ -2339,20 +2330,6 @@
           h('div', { class: 'form-row', id: 'mon-email-row', style: 'display:none' },
             h('label', null, 'Endereço de e-mail'),
             h('input', { type: 'email', id: 'mon-email-addr', placeholder: 'advogado@escritorio.com.br' })
-          ),
-          h('div', { class: 'modal-info modal-info-oab' },
-            h('strong', null, '🔎 Monitoramento por OAB:'),
-            h('br'),
-            'Se o advogado responsável pelo caso tem OAB cadastrada (em Equipe > Editar advogado), ',
-            'o sistema busca automaticamente publicações do DJe que citem essa OAB e cria andamentos ',
-            'no caso. Funciona para qualquer tribunal que tenha DJe público. ',
-            'Exemplo: OAB/RJ 244.384 será monitorada em todos os casos sob responsabilidade desse advogado.'
-          ),
-          h('div', { class: 'modal-info' },
-            h('strong', null, '💡 Sobre o Datajud:'),
-            ' O Datajud é a API pública gratuita do Conselho Nacional de Justiça. ',
-            'A chave padrão "APIKeyPublicaCNJ" funciona para testes com rate-limit menor. ',
-            'Solicite sua chave gratuita em datajud.cnj.jus.br para uso em produção.'
           )
         ),
         h('div', { class: 'modal-footer' },
@@ -2367,10 +2344,7 @@
 
     // carregar valores atuais
     API.req('GET', '/api/monitoring/settings').then(s => {
-      if (s['monitor.api_key_masked']) document.getElementById('mon-api-key').placeholder = 'Atual: ' + s['monitor.api_key_masked'];
       document.getElementById('mon-interval').value = s['monitor.default_interval_minutes'] || '60';
-      document.getElementById('mon-dje').checked = s['monitor.dje_enabled'] === '1';
-      document.getElementById('mon-datajud').checked = s['monitor.datajud_enabled'] === '1';
       document.getElementById('mon-desktop').checked = s['monitor.notify_desktop'] === '1';
       document.getElementById('mon-email').checked = s['monitor.notify_email'] === '1';
       document.getElementById('mon-email-addr').value = s['monitor.notify_email_address'] || '';
@@ -2388,10 +2362,7 @@
 
   async function saveMonSettings() {
     const body = {
-      api_key: document.getElementById('mon-api-key').value || 'APIKeyPublicaCNJ',
       default_interval_minutes: parseInt(document.getElementById('mon-interval').value) || 60,
-      dje_enabled: document.getElementById('mon-dje').checked,
-      datajud_enabled: document.getElementById('mon-datajud').checked,
       notify_desktop: document.getElementById('mon-desktop').checked,
       notify_email: document.getElementById('mon-email').checked,
       notify_email_address: document.getElementById('mon-email-addr').value,

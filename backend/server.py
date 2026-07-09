@@ -1644,8 +1644,8 @@ def monitor_case_toggle(handler, case_id, body):
         c = conn.execute("SELECT id, code, court, title FROM cases WHERE id=? AND (deleted_at IS NULL OR deleted_at='')", (case_id,)).fetchone()
         if not c:
             return json_response(handler, 404, {"error": "caso nao encontrado"})
-        if not tribunal and HAS_MONITOR:
-            tribunal = _monitor.detect_tribunal(dict(c))
+        # Comunica PJE descobre o tribunal pela UF da OAB do responsavel
+        # (campo "tribunal" do monitoring fica apenas informativo)
         _mon_upsert_monitoring(case_id, status=status, interval_minutes=interval, tribunal=tribunal)
     finally:
         conn.close()
@@ -1655,7 +1655,13 @@ def monitor_case_toggle(handler, case_id, body):
 
 
 def monitor_run_now(handler, case_id, body=None):
-    """POST /api/cases/{id}/monitor/run — checagem imediata."""
+    """POST /api/cases/{id}/monitor/run — checagem imediata via Comunica PJE.
+
+    v2.5: busca publicacoes pela OAB do responsavel do caso (nao mais por CNJ).
+    Para cada publicacao retornada:
+      - se o CNJ ja tem caso cadastrado: insere como andamento
+      - se nao tem: cria caso novo + insere como primeiro andamento
+    """
     user = require_auth(handler)
     if not user:
         return
@@ -1666,67 +1672,64 @@ def monitor_run_now(handler, case_id, body=None):
     conn = db()
     try:
         row = conn.execute(
-            "SELECT m.*, c.code, c.court, c.title FROM monitoring m JOIN cases c ON c.id=m.case_id "
-            "WHERE m.case_id=? AND (c.deleted_at IS NULL OR c.deleted_at='')", (case_id,)
+            "SELECT c.id, c.responsible_id, u.oab AS responsible_oab "
+            "FROM cases c LEFT JOIN users u ON u.id = c.responsible_id "
+            "WHERE c.id=? AND (c.deleted_at IS NULL OR c.deleted_at='')",
+            (case_id,),
         ).fetchone()
         if not row:
-            return json_response(handler, 404, {"error": "monitoramento nao configurado"})
-        case = dict(row)
-        tribunal = case.get("tribunal") or _monitor.detect_tribunal(case)
-        cnj = case.get("code") or ""
-        if not cnj:
-            return json_response(handler, 400, {"error": "caso sem numero CNJ"})
-        api_key = _mon_get_api_key()
-        result = {"datajud": None, "dje": None, "inserted": 0}
-        # Datajud
+            return json_response(handler, 404, {"error": "caso nao encontrado"})
+        oab_text = (row["responsible_oab"] or "").strip()
+        if not oab_text:
+            return json_response(handler, 400, {"error": "responsavel sem OAB cadastrada"})
+        oab_info = _monitor._parse_oab(oab_text)
+        if not oab_info["numero"] or not oab_info["uf"]:
+            return json_response(handler, 400, {"error": "OAB invalida", "oab": oab_text})
+        # Chama o Comunica PJE
         try:
-            resp = _monitor.datajud_lookup(cnj, tribunal, api_key)
-            movs = _monitor.extract_movements(resp)
-            worker = MONITOR_WORKER.get("instance")
-            if worker:
-                inserted = worker._insert_movements(case_id, movs, "datajud")
-            else:
-                inserted = 0
-            result["datajud"] = {"ok": True, "count": len(movs), "inserted": inserted}
-            result["inserted"] += inserted
+            pubs = _monitor.scraper_pje(oab_info["numero"], oab_info["uf"])
         except Exception as e:
-            result["datajud"] = {"ok": False, "error": str(e)[:200]}
-        # DJE
-        try:
-            scraper_key = "TJRJ_EPROC" if tribunal == "TJRJ" else tribunal
-            sc = _monitor.SCRAPERS.get(scraper_key) or _monitor.SCRAPERS.get(tribunal)
-            if sc:
-                pubs = sc({"code": cnj, "court": case.get("court", "")})
-                worker = MONITOR_WORKER.get("instance")
-                if worker:
-                    ins = worker._insert_dedupe_pubs(case_id, pubs)
-                else:
-                    ins = 0
-                result["dje"] = {
-                    "ok": True,
-                    "count": len(pubs),
-                    "inserted": ins,
-                    "pubs": [
-                        {
-                            "date": (p.get("date") or "")[:10],
-                            "title": (p.get("title") or "")[:200],
-                            "description": (p.get("description") or "")[:300],
-                            "url": p.get("url") or "",
-                        }
-                        for p in pubs[:5]
-                    ],
-                }
-                result["inserted"] += ins
-        except Exception as e:
-            result["dje"] = {"ok": False, "error": str(e)[:200]}
-        # update last_check_at
-        _mon_upsert_monitoring(case_id, status=case.get("status") or "active",
-                               interval_minutes=case.get("interval_minutes") or 60, tribunal=tribunal)
+            return json_response(handler, 500, {"error": "falha no Comunica PJE", "detail": str(e)[:200]})
         worker = MONITOR_WORKER.get("instance")
+        total_inserted = 0
+        new_cases = 0
+        sample_pubs = []
+        for pub in pubs:
+            cnj = pub.get("cnj", "")
+            if not cnj:
+                continue
+            target_case_id = worker._find_case_by_cnj(cnj) if worker else None
+            is_new = False
+            if not target_case_id and worker:
+                target_case_id = worker._auto_create_case(pub, row["responsible_id"] or "")
+                if target_case_id:
+                    new_cases += 1
+                    is_new = True
+            if not target_case_id:
+                continue
+            ins = worker._insert_dedupe_pubs_for_case(target_case_id, [pub]) if worker else 0
+            total_inserted += ins
+            sample_pubs.append({
+                "date": (pub.get("date") or "")[:10],
+                "title": (pub.get("title") or "")[:200],
+                "cnj": cnj,
+                "case_id": target_case_id,
+                "new_case": is_new,
+                "url": pub.get("url") or "",
+            })
+        result = {
+            "source": "comunica_pje",
+            "oab": f"{oab_info['uf']} {oab_info['numero']}",
+            "pubs_found": len(pubs),
+            "inserted": total_inserted,
+            "new_cases": new_cases,
+            "pubs": sample_pubs[:5],
+        }
+        # update last_check_at
         if worker:
-            worker._update_case_state(case_id,
+            worker._update_monitoring_state(case_id,
                 last_check_at=datetime.datetime.now().isoformat(timespec="seconds"),
-                tribunal=tribunal, error_count=0, last_error=None)
+                error_count=0, last_error=None)
     finally:
         conn.close()
     return json_response(handler, 200, result)
@@ -1745,6 +1748,7 @@ def monitor_status(handler):
                    m.error_count, m.last_error, m.tribunal,
                    c.code AS cnj, c.title AS case_title, c.court, c.responsible_id,
                    u.oab AS responsible_oab,
+                   u.name AS responsible_name,
                    (SELECT COUNT(*) FROM monitoring_log ml WHERE ml.case_id=m.case_id) AS log_count
             FROM monitoring m
             JOIN cases c ON c.id = m.case_id
@@ -1816,9 +1820,11 @@ def monitor_settings_set(handler, body):
             _mon_settings_set("monitor.default_interval_minutes", str(v))
         except Exception:
             pass
-    for k in ("notify_desktop", "notify_email", "dje_enabled", "datajud_enabled"):
+    for k in ("notify_desktop", "notify_email"):
         if k in body:
             _mon_settings_set(f"monitor.{k}", "1" if body[k] else "0")
+    # dje_enabled e datajud_enabled sao ignorados (v2.5 usa apenas Comunica PJE)
+    # mantemos retrocompat para nao quebrar UI antiga
     if "notify_email_address" in body:
         _mon_settings_set("monitor.notify_email_address", str(body["notify_email_address"] or ""))
     return monitor_settings_get(handler)
