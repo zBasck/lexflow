@@ -98,6 +98,15 @@
     const dt = new Date(d + 'T00:00:00');
     return dt.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
   };
+  const fmtDateTime = (iso) => {
+    if (!iso) return '-';
+    try {
+      const d = new Date(String(iso).replace(' ', 'T'));
+      if (isNaN(d.getTime())) return String(iso);
+      const pad = n => String(n).padStart(2, '0');
+      return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    } catch (e) { return String(iso); }
+  };
   const initials = (name) => {
     if (!name) return '?';
     return name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
@@ -2201,7 +2210,8 @@
     const casesWithOAB = items.filter(it => it.responsible_oab).length;
     const casesNoOAB = items.filter(it => !it.responsible_oab).length;
 
-    return h('div', { class: 'mon-page' },
+    return AppShell('🔔 Monitoramento de Processos',
+      h('div', { class: 'mon-page' },
       h('div', { class: 'page-header' },
         h('h1', null, '🔔 Monitoramento de Processos'),
         h('p', { class: 'page-subtitle' }, 'Datajud (CNJ, gratuito) + DJe dos seus tribunais + monitoramento por OAB'),
@@ -2259,7 +2269,7 @@
               ))
             )
       )
-    );
+    ));
   }
 
   function openDjePubsModal(it, pubs) {

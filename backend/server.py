@@ -13,6 +13,7 @@ import secrets
 import re
 import uuid
 import datetime
+import inspect
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -646,8 +647,17 @@ def dispatch(handler, method, path):
         resource, rid, action = m.group(1), m.group(2), m.group(3)
         fn = ROUTES.get((method, f"/api/{resource}/{{id}}/{action}"))
         if fn:
-            body = read_body(handler) if method in ("POST", "PUT", "PATCH") else None
-            return fn(handler, rid, body)
+            # Aridade adaptativa: alguns handlers (ex.: case_updates_create) soh aceitam (handler, case_id)
+            # IMPORTANTE: o body do rfile soh pode ser lido UMA vez. Se o handler esperar 2 args
+            # (handler, rid), ele le o body internamente. Se esperar 3, lemos aqui e passamos.
+            nparams = len(inspect.signature(fn).parameters)
+            if nparams >= 3:
+                body = read_body(handler) if method in ("POST", "PUT", "PATCH") else None
+                return fn(handler, rid, body)
+            else:
+                # handler com 2 args (handler, rid) ou 1 arg (handler)
+                # NAO le o body aqui - deixa o handler fazer isso
+                return fn(handler, rid) if nparams >= 2 else fn(handler)
 
     not_found(handler)
 
