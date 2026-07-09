@@ -351,7 +351,7 @@ def init_db():
 
     # Defaults de monitoramento (idempotente)
     for k, v in {
-        "monitor.api_key": "APIKeyPublicaCNJ",  # chave publica de demonstracao do CNJ
+        "monitor.api_key": "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==",  # chave publica CNJ (Patrick)
         "monitor.default_interval_minutes": "60",
         "monitor.notify_desktop": "1",
         "monitor.notify_email": "0",
@@ -360,6 +360,12 @@ def init_db():
         "monitor.datajud_enabled": "1",
     }.items():
         cur.execute("INSERT OR IGNORE INTO monitoring_settings(key, value) VALUES (?, ?)", (k, v))
+
+    # Migracao: troca o placeholder inutil "APIKeyPublicaCNJ" pela chave real do Patrick
+    cur.execute(
+        "UPDATE monitoring_settings SET value = ? WHERE key = 'monitor.api_key' AND (value = 'APIKeyPublicaCNJ' OR value = '')",
+        ("cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==",),
+    )
 
     cur.execute("SELECT COUNT(*) AS c FROM users")
     if cur.fetchone()["c"] == 0:
@@ -633,6 +639,15 @@ def dispatch(handler, method, path):
         if fn:
             body = read_body(handler)
             return fn(handler, m.group(1), body)
+
+    # Pattern generico /api/{resource}/{id}/{action} (3 segmentos)
+    m = re.match(r"^/api/(\w+)/([\w\-]+)/(\w+)$", path)
+    if m:
+        resource, rid, action = m.group(1), m.group(2), m.group(3)
+        fn = ROUTES.get((method, f"/api/{resource}/{{id}}/{action}"))
+        if fn:
+            body = read_body(handler) if method in ("POST", "PUT", "PATCH") else None
+            return fn(handler, rid, body)
 
     not_found(handler)
 
@@ -1630,7 +1645,7 @@ def monitor_run_now(handler, case_id, body=None):
     user = require_auth(handler)
     if not user:
         return
-    if not has_permission(user, "create"):
+    if not is_socio(user):
         return json_response(handler, 403, {"error": "forbidden"})
     if not HAS_MONITOR or _monitor is None:
         return json_response(handler, 503, {"error": "monitor indisponivel"})
@@ -1673,7 +1688,20 @@ def monitor_run_now(handler, case_id, body=None):
                     ins = worker._insert_dedupe_pubs(case_id, pubs)
                 else:
                     ins = 0
-                result["dje"] = {"ok": True, "count": len(pubs), "inserted": ins}
+                result["dje"] = {
+                    "ok": True,
+                    "count": len(pubs),
+                    "inserted": ins,
+                    "pubs": [
+                        {
+                            "date": (p.get("date") or "")[:10],
+                            "title": (p.get("title") or "")[:200],
+                            "description": (p.get("description") or "")[:300],
+                            "url": p.get("url") or "",
+                        }
+                        for p in pubs[:5]
+                    ],
+                }
                 result["inserted"] += ins
         except Exception as e:
             result["dje"] = {"ok": False, "error": str(e)[:200]}
@@ -1701,14 +1729,26 @@ def monitor_status(handler):
             SELECT m.case_id, m.status, m.interval_minutes, m.last_check_at,
                    m.last_movement_at, m.last_movement_title, m.last_movement_source,
                    m.error_count, m.last_error, m.tribunal,
-                   c.code AS cnj, c.title AS case_title, c.court,
+                   c.code AS cnj, c.title AS case_title, c.court, c.responsible_id,
+                   u.oab AS responsible_oab,
                    (SELECT COUNT(*) FROM monitoring_log ml WHERE ml.case_id=m.case_id) AS log_count
             FROM monitoring m
             JOIN cases c ON c.id = m.case_id
+            LEFT JOIN users u ON u.id = c.responsible_id
             WHERE (c.deleted_at IS NULL OR c.deleted_at='')
             ORDER BY c.title
         """).fetchall()
-        out = [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            oab = (d.get("responsible_oab") or "").strip()
+            if oab:
+                import re as _re
+                m_num = _re.search(r"(\d{4,6})", oab)
+                m_uf = _re.search(r"/([A-Z]{2})", oab) or _re.search(r"^([A-Z]{2})", oab)
+                d["responsible_oab_num"] = m_num.group(1) if m_num else None
+                d["responsible_oab_uf"] = m_uf.group(1) if m_uf else None
+            out.append(d)
     finally:
         conn.close()
     return json_response(handler, 200, {"items": out})
@@ -1739,7 +1779,7 @@ def monitor_settings_set(handler, body):
     user = require_auth(handler)
     if not user:
         return
-    if not has_permission(user, "create"):
+    if not is_socio(user):
         return json_response(handler, 403, {"error": "forbidden"})
     body = body or {}
     if "api_key" in body and body["api_key"]:
@@ -1781,7 +1821,17 @@ def monitor_log_list(handler):
             ORDER BY ml.checked_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
-        out = [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            oab = (d.get("responsible_oab") or "").strip()
+            if oab:
+                import re as _re
+                m_num = _re.search(r"(\d{4,6})", oab)
+                m_uf = _re.search(r"/([A-Z]{2})", oab) or _re.search(r"^([A-Z]{2})", oab)
+                d["responsible_oab_num"] = m_num.group(1) if m_num else None
+                d["responsible_oab_uf"] = m_uf.group(1) if m_uf else None
+            out.append(d)
     finally:
         conn.close()
     return json_response(handler, 200, {"items": out})

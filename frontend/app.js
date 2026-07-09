@@ -2140,7 +2140,10 @@
 
     const row = (it) => h('div', { class: 'mon-row' },
       h('div', { class: 'mon-row-main' },
-        h('div', { class: 'mon-row-title' }, it.case_title || '(caso removido)'),
+        h('div', { class: 'mon-row-title' },
+          it.case_title || '(caso removido)',
+          it.responsible_oab ? h('span', { class: 'mon-oab-badge', title: 'OAB do advogado responsavel — publicacoes que citem essa OAB serao inseridas aqui' }, '🔎 OAB/' + it.responsible_oab_uf + ' ' + it.responsible_oab) : null
+        ),
         h('div', { class: 'mon-row-meta' },
           h('span', null, it.cnj || 'sem CNJ'),
           it.tribunal ? h('span', { class: 'mon-trib' }, it.tribunal) : null,
@@ -2158,9 +2161,22 @@
           try {
             toast('Sincronizando...', 'info');
             const r = await API.req('POST', '/api/cases/' + it.case_id + '/monitor/run', {});
-            const dj = r.datajud && r.datajud.ok ? 'Datajud OK (' + (r.datajud.inserted || 0) + ' novos)' : 'Datajud falhou';
-            const dje = r.dje && r.dje.ok ? 'DJe OK (' + (r.dje.inserted || 0) + ' novos)' : 'DJe: 0';
-            toast(dj + ' | ' + dje, r.inserted > 0 ? 'ok' : 'info');
+            const dj = r.datajud && r.datajud.ok
+              ? 'Datajud OK (' + (r.datajud.inserted || 0) + ' novos)'
+              : ('Datajud: ' + ((r.datajud && r.datajud.error) || 'falhou'));
+            const djeCount = r.dje && r.dje.ok ? (r.dje.inserted || 0) : 0;
+            const djeFound = r.dje && r.dje.ok ? (r.dje.count || 0) : 0;
+            const djePubs = (r.dje && r.dje.pubs) || [];
+            let djeMsg = 'DJe OK (' + djeCount + ' novos de ' + djeFound + ')';
+            if (djePubs.length && djeCount > 0) {
+              djeMsg += ' · ' + djePubs[0].title;
+            } else if (djePubs.length && djeCount === 0) {
+              djeMsg += ' · ja registrado(s)';
+            }
+            toast(dj + ' | ' + djeMsg, r.inserted > 0 ? 'ok' : 'info');
+            if (djePubs.length > 1 && djeCount > 0) {
+              openDjePubsModal(it, djePubs);
+            }
             await loadAll();
             render();
           } catch (e) {
@@ -2181,16 +2197,31 @@
       )
     );
 
+    // Calcular estatisticas OAB
+    const casesWithOAB = items.filter(it => it.responsible_oab).length;
+    const casesNoOAB = items.filter(it => !it.responsible_oab).length;
+
     return h('div', { class: 'mon-page' },
       h('div', { class: 'page-header' },
         h('h1', null, '🔔 Monitoramento de Processos'),
-        h('p', { class: 'page-subtitle' }, 'Datajud (CNJ, gratuito) + DJe dos seus tribunais'),
+        h('p', { class: 'page-subtitle' }, 'Datajud (CNJ, gratuito) + DJe dos seus tribunais + monitoramento por OAB'),
         h('div', { class: 'mon-header-actions' },
           h('button', { class: 'btn-secondary', onclick: () => openMonitoringSettings() }, '⚙ Configurações'),
           h('button', { class: 'btn-secondary', onclick: async () => {
             await loadAll(); render(); toast('Atualizado', 'ok');
           } }, '🔄 Atualizar')
         )
+      ),
+      h('div', { class: 'mon-oab-banner' },
+        h('strong', null, '🔎 Monitoramento por OAB:'),
+        ' ',
+        casesWithOAB > 0
+          ? (casesWithOAB + ' caso(s) tem OAB do responsavel cadastrada — publicacoes serao inseridas automaticamente.')
+          : 'Nenhum caso com OAB do responsavel. Cadastre OAB em Equipe > Editar advogado para ativar busca automatica por OAB.',
+        (casesNoOAB > 0 && casesWithOAB === 0)
+          ? h('div', { class: 'mon-oab-banner-cta' },
+              h('a', { href: '#', onclick: (e) => { e.preventDefault(); goTo('team'); } }, '→ Cadastrar OAB agora'))
+          : null
       ),
 
       h('div', { class: 'mon-info' },
@@ -2231,6 +2262,37 @@
     );
   }
 
+  function openDjePubsModal(it, pubs) {
+    const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+      h('div', { class: 'modal-card' },
+        h('div', { class: 'modal-header' },
+          h('h2', null, '📰 Publicacoes DJe encontradas'),
+          h('button', { class: 'modal-close', onclick: () => close() }, 'x')
+        ),
+        h('div', { class: 'modal-body' },
+          h('p', { style: 'color:#5a6478;margin-bottom:12px;' },
+            'Caso: ', h('strong', null, it.case_title || it.cnj || ''),
+            ' - ', pubs.length, ' publicacao(oes) ja vinculadas como andamento.'
+          ),
+          h('div', { class: 'dje-pubs-list' },
+            ...pubs.map(p =>
+              h('div', { class: 'dje-pub-item' },
+                h('div', { class: 'dje-pub-date' }, p.date || '-'),
+                h('div', { class: 'dje-pub-title' }, p.title || '(sem titulo)'),
+                p.description ? h('div', { class: 'dje-pub-desc' }, p.description) : null,
+                p.url ? h('a', { href: p.url, target: '_blank', class: 'dje-pub-link' }, 'Abrir publicacao') : null
+              )
+            )
+          ),
+          h('div', { style: 'margin-top:16px;display:flex;gap:8px;justify-content:flex-end;' },
+            h('button', { class: 'btn-primary', onclick: () => { close(); S.route = 'case'; S.caseId = it.case_id; render(); } }, 'Ver no caso')
+          )
+        )
+      )
+    );
+    document.body.appendChild(overlay);
+  }
+
   function openMonitoringSettings() {
     const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } },
       h('div', { class: 'modal-card modal-settings' },
@@ -2239,9 +2301,18 @@
           h('button', { class: 'modal-close', onclick: () => close() }, '×')
         ),
         h('div', { class: 'modal-body' },
+          h('div', { class: 'modal-warning' },
+            h('strong', null, '⚠ Sobre a chave do Datajud:'),
+            h('br'),
+            'A chave pública padrão "APIKeyPublicaCNJ" tem rate-limit baixo e pode retornar ',
+            h('strong', null, 'HTTP 401 Unauthorized'),
+            ' em produção. Recomendamos solicitar sua chave pessoal gratuita em ',
+            h('a', { href: 'https://datajud.cnj.jus.br', target: '_blank', rel: 'noopener' }, 'datajud.cnj.jus.br'),
+            ' e colar abaixo.'
+          ),
           h('div', { class: 'form-row' },
             h('label', null, 'API Key do Datajud (CNJ)'),
-            h('input', { type: 'password', id: 'mon-api-key', placeholder: 'APIKeyPublicaCNJ (deixe vazio para usar chave publica padrao)' })
+            h('input', { type: 'password', id: 'mon-api-key', placeholder: 'Cole sua chave pessoal ou deixe vazio para usar a padrão' })
           ),
           h('div', { class: 'form-row' },
             h('label', null, 'Intervalo padrão (minutos)'),
@@ -2258,6 +2329,14 @@
           h('div', { class: 'form-row', id: 'mon-email-row', style: 'display:none' },
             h('label', null, 'Endereço de e-mail'),
             h('input', { type: 'email', id: 'mon-email-addr', placeholder: 'advogado@escritorio.com.br' })
+          ),
+          h('div', { class: 'modal-info modal-info-oab' },
+            h('strong', null, '🔎 Monitoramento por OAB:'),
+            h('br'),
+            'Se o advogado responsável pelo caso tem OAB cadastrada (em Equipe > Editar advogado), ',
+            'o sistema busca automaticamente publicações do DJe que citem essa OAB e cria andamentos ',
+            'no caso. Funciona para qualquer tribunal que tenha DJe público. ',
+            'Exemplo: OAB/RJ 244.384 será monitorada em todos os casos sob responsabilidade desse advogado.'
           ),
           h('div', { class: 'modal-info' },
             h('strong', null, '💡 Sobre o Datajud:'),

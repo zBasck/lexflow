@@ -240,26 +240,22 @@ def _dje_normalize_date(s: str) -> Optional[str]:
 
 
 def scraper_tjsp(case: dict) -> list:
-    """TJSP DJe — consulta o portal de publicacoes por CNJ."""
+    """TJSP DJe — consulta o portal de publicacoes por CNJ. Raise em erro."""
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        url = "https://dje.tjsp.jus.br/cdje/consultaSimples.do"
-        data = urllib.parse.urlencode({
-            "cdTipo": "NUM",
-            "dadosConsulta.numero": cnj,
-            "dadosConsulta.dtInicio": "",
-            "dadosConsulta.dtFim": "",
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        return _parse_tjsp_html(html, cnj)
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TJSP",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+    url = "https://dje.tjsp.jus.br/cdje/consultaSimples.do"
+    data = urllib.parse.urlencode({
+        "cdTipo": "NUM",
+        "dadosConsulta.numero": cnj,
+        "dadosConsulta.dtInicio": "",
+        "dadosConsulta.dtFim": "",
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    return _parse_tjsp_html(html, cnj)
 
 
 def _parse_tjsp_html(html: str, cnj: str) -> list:
@@ -288,120 +284,141 @@ def _parse_tjsp_html(html: str, cnj: str) -> list:
 
 
 def scraper_tjrs(case: dict) -> list:
-    """TJRS DJe — pesquisa por CNJ no portal do diario."""
+    """TJRS DJe — pesquisa por CNJ no portal do diario. Raise em erro."""
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        # TJRS usa o portal unificado do RS
-        url = f"https://www.tjrs.jus.br/busca/?q={urllib.parse.quote(cnj)}&p=1"
-        req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        # Best-effort: extrai titulos
-        import re
-        titles = re.findall(r"<h[23][^>]*>(.+?)</h[23]>", html, flags=re.S | re.I)
-        return [{
+    cnj_clean = re.sub(r"[^0-9]", "", cnj)
+    if len(cnj_clean) != 20:
+        return []
+    url = f"https://www.tjrs.jus.br/busca/?q={urllib.parse.quote(cnj)}&p=1"
+    req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    import re as _re
+    titles = _re.findall(r"<h[23][^>]*>(.+?)</h[23]>", html, flags=_re.S | _re.I)
+    pubs = []
+    for t in titles[:10]:
+        text = _re.sub(r"<[^>]+>", "", t or "").strip()
+        if not text or cnj_clean[:8] not in text:
+            continue
+        pubs.append({
             "date": datetime.date.today().isoformat(),
-            "title": (t or "")[:200].strip(),
-            "description": f"Publicacao encontrada no TJRS para {cnj}",
+            "title": text[:200],
+            "description": f"Publicacao TJRS — {cnj}",
             "type": "publicacao",
             "url": url,
-        } for t in titles[:5] if cnj[:8] in (t or "")]
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TJRS",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+        })
+    return pubs
 
 
 def scraper_tjam(case: dict) -> list:
-    """TJAM DJe — diario da justica do Amazonas."""
+    """TJAM DJe — diario da justica do Amazonas. Raise em erro."""
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        url = f"https://consultasaj.tjam.jus.br/cdje/consultaSimples.do?cdTipo=NUM&dadosConsulta.numero={urllib.parse.quote(cnj)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        return _parse_tjsp_html(html, cnj)  # mesmo layout do DJe CNJ
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TJAM",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+    url = f"https://consultasaj.tjam.jus.br/cdje/consultaSimples.do?cdTipo=NUM&dadosConsulta.numero={urllib.parse.quote(cnj)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    return _parse_tjsp_html(html, cnj)
 
 
 def scraper_tjrj_eproc(case: dict) -> list:
-    """TJRJ — sistema Eproc (1a instancia, RJ)."""
+    """TJRJ — sistema Eproc (1a instancia, RJ).
+
+    URL publica do PJe eproc do TJRJ (substitui o antigo externo_controlador
+    que foi descontinuado). Lanca excecao em caso de erro — nao retorna pub falsa.
+    """
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        # Eproc do TJRJ tem consulta publica por CNJ
-        url = f"https://eproc.tjrj.jus.br/eproc/externo_controlador.php?acao=consulta_publica&numeroProcesso={urllib.parse.quote(cnj)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        import re
-        moves = re.findall(r"<td[^>]*>(.+?)</td>", html, flags=re.S | re.I)
-        return [{
-            "date": datetime.date.today().isoformat(),
-            "title": m[:200].strip(),
-            "description": f"Movimentacao Eproc TJRJ {cnj}",
+    cnj_clean = re.sub(r"[^0-9]", "", cnj)
+    if len(cnj_clean) != 20:
+        return []
+    url = f"https://pje.tjrj.jus.br/pje/ConsultaPublica/DetalheProcessoConsultaPublica/listView.seam?numeroProcesso={urllib.parse.quote(cnj)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    import re as _re
+    rows = _re.findall(r"<tr[^>]*>(.+?)</tr>", html, flags=_re.S | _re.I)
+    pubs = []
+    for r in rows:
+        cells = _re.findall(r"<td[^>]*>(.+?)</td>", r, flags=_re.S | _re.I)
+        if len(cells) < 2:
+            continue
+        text_cells = [_re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+        if not any(cnj_clean[:8] in (c or "").replace("-", "").replace(".", "") for c in text_cells):
+            continue
+        date = _dje_normalize_date(text_cells[0]) or datetime.date.today().isoformat()
+        pubs.append({
+            "date": date,
+            "title": text_cells[1][:200],
+            "description": " | ".join(text_cells[2:])[:500] if len(text_cells) > 2 else None,
             "type": "publicacao",
             "url": url,
-        } for m in moves[:5] if cnj[:8] in m]
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TJRJ Eproc",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+        })
+    return pubs
 
 
 def scraper_tjrj_pje(case: dict) -> list:
-    """TJRJ — sistema PJe (2a instancia)."""
+    """TJRJ — sistema PJe (2a instancia). Raise em erro."""
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        url = f"https://www.tjrj.jus.br/consulta-processual?numero={urllib.parse.quote(cnj)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        import re
-        moves = re.findall(r"<li[^>]*class=\"movimentacao\"[^>]*>(.+?)</li>", html, flags=re.S | re.I)
-        if not moves:
-            moves = re.findall(r"<div[^>]*class=\"[^\"]*andamento[^\"]*\"[^>]*>(.+?)</div>", html, flags=re.S | re.I)
-        return [{
+    cnj_clean = re.sub(r"[^0-9]", "", cnj)
+    if len(cnj_clean) != 20:
+        return []
+    url = f"https://www.tjrj.jus.br/consulta-processual?numero={urllib.parse.quote(cnj)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    import re as _re
+    moves = _re.findall(r"<li[^>]*class=\"movimentacao\"[^>]*>(.+?)</li>", html, flags=_re.S | _re.I)
+    if not moves:
+        moves = _re.findall(r"<div[^>]*class=\"[^\"]*andamento[^\"]*\"[^>]*>(.+?)</div>", html, flags=_re.S | _re.I)
+    pubs = []
+    for m in moves[:10]:
+        text = _re.sub(r"<[^>]+>", "", m).strip()
+        if not text:
+            continue
+        pubs.append({
             "date": datetime.date.today().isoformat(),
-            "title": m[:200].strip(),
-            "description": f"Movimentacao PJe TJRJ {cnj}",
+            "title": text[:200],
+            "description": f"PJe-TJRJ 2G — {cnj}",
             "type": "publicacao",
             "url": url,
-        } for m in moves[:5]]
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TJRJ PJe",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+        })
+    return pubs
 
 
 def scraper_trt1(case: dict) -> list:
-    """TRT-1 (RJ) — Portal PJe Trabalhista."""
+    """TRT-1 (RJ) — Portal PJe Trabalhista. Raise em erro."""
     cnj = case.get("code") or ""
     if not cnj:
         return []
-    try:
-        url = f"https://pje.trt1.jus.br/consultaprocessual/detalhe-processo/{urllib.parse.quote(cnj)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        import re
-        moves = re.findall(r"<div[^>]*class=\"[^\"]*movimento[^\"]*\"[^>]*>(.+?)</div>", html, flags=re.S | re.I)
-        return [{
+    cnj_clean = re.sub(r"[^0-9]", "", cnj)
+    if len(cnj_clean) != 20:
+        return []
+    url = f"https://pje.trt1.jus.br/consultaprocessual/detalhe-processo/{urllib.parse.quote(cnj)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+    import re as _re
+    moves = _re.findall(r"<div[^>]*class=\"[^\"]*movimento[^\"]*\"[^>]*>(.+?)</div>", html, flags=_re.S | _re.I)
+    pubs = []
+    for m in moves[:10]:
+        text = _re.sub(r"<[^>]+>", "", m).strip()
+        if not text:
+            continue
+        pubs.append({
             "date": datetime.date.today().isoformat(),
-            "title": m[:200].strip(),
-            "description": f"Movimentacao TRT-1 {cnj}",
+            "title": text[:200],
+            "description": f"PJe-TRT1 — {cnj}",
             "type": "publicacao",
             "url": url,
-        } for m in moves[:5]]
-    except Exception as e:
-        return [{"date": None, "title": "Erro scraper TRT1",
-                 "description": str(e)[:200], "type": "scraper_error", "url": ""}]
+        })
+    return pubs
 
 
 # Mapa tribunal -> scraper
@@ -414,6 +431,61 @@ SCRAPERS = {
     "TJRJ_PJE": scraper_tjrj_pje,
     "TRT1": scraper_trt1,
 }
+
+
+# --- OAB Scraper ---
+# Busca publicacoes do DJe que citem uma OAB especifica (numero + UF).
+# Se o responsavel do caso tem OAB cadastrada, o worker chama essa funcao
+# para gerar andamentos quando a OAB aparece em publicacoes recentes.
+
+def oab_lookup(numero_oab: str, uf: str = "RJ", days_back: int = 7) -> list:
+    """Busca publicacoes do DJe que mencionem a OAB.
+
+    numero_oab: string numerica (ex: "244384")
+    uf: sigla do estado (ex: "RJ", "SP", "RS", "AM")
+    Retorna lista de publicacoes (date, title, description, type='publicacao', url)
+    """
+    if not numero_oab:
+        return []
+    numero_oab = re.sub(r"[^0-9]", "", str(numero_oab))
+    if not numero_oab:
+        return []
+    oab_fmt = f"{numero_oab[:3]}.{numero_oab[3:]}" if len(numero_oab) >= 6 else numero_oab
+    dje_urls = {
+        "RJ": "https://www.tjrj.jus.br/consulta-publica",
+        "SP": "https://dje.tjsp.jus.br/cdje/consultaSimples.do",
+        "RS": "https://www.tjrs.jus.br/busca/",
+        "AM": "https://consultasaj.tjam.jus.br/cdje/consultaSimples.do",
+    }
+    out = []
+    target = dje_urls.get(uf.upper(), dje_urls["RJ"])
+    try:
+        req = urllib.request.Request(target, headers={"User-Agent": "LexFlow/2.1"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        import re as _re
+        blocks = _re.findall(r"<p[^>]*>(.+?)</p>", html, flags=_re.S | _re.I) + \
+                 _re.findall(r"<li[^>]*>(.+?)</li>", html, flags=_re.S | _re.I)
+        for b in blocks[:50]:
+            text = _re.sub(r"<[^>]+>", " ", b)
+            text = _re.sub(r"\s+", " ", text).strip()
+            if not text or numero_oab not in text:
+                continue
+            if "OAB" not in text.upper():
+                continue
+            out.append({
+                "date": datetime.date.today().isoformat(),
+                "title": f"Publicacao OAB/{uf} {oab_fmt}",
+                "description": text[:500],
+                "type": "publicacao",
+                "url": target,
+            })
+    except Exception:
+        # Best-effort: silencioso em caso de erro
+        pass
+    return out
+
+
 
 
 # --- Worker thread ---
@@ -460,7 +532,7 @@ class MonitoringWorker(threading.Thread):
         try:
             rows = conn.execute("""
                 SELECT m.case_id, m.interval_minutes, m.tribunal, m.last_movement_at, m.error_count,
-                       c.code, c.court, c.title
+                       c.code, c.court, c.title, c.responsible_id
                 FROM monitoring m
                 JOIN cases c ON c.id = m.case_id
                 WHERE m.status = 'active' AND (c.deleted_at IS NULL OR c.deleted_at = '')
@@ -553,11 +625,20 @@ class MonitoringWorker(threading.Thread):
                 self._consecutive_failures = 0
                 self._log(case_id, "datajud", True, f"{len(movs)} movimentos, {inserted} novos", inserted)
             except urllib.error.HTTPError as e:
-                msg = f"HTTP {e.code}: {e.reason[:200]}"
+                if e.code == 401:
+                    msg = ("HTTP 401: chave do Datajud rejeitada. Solicite sua chave "
+                           "pessoal gratuita em https://datajud.cnj.jus.br e cole em "
+                           "Monitoramento > Configuracoes > API Key.")
+                elif e.code == 403:
+                    msg = "HTTP 403: chave sem permissao para este tribunal. Verifique a chave pessoal."
+                elif e.code == 429:
+                    msg = "HTTP 429: rate limit excedido. Aguarde 60s e reduza a frequencia de polling."
+                else:
+                    msg = f"HTTP {e.code}: {e.reason[:200]}"
                 self._log(case_id, "datajud", False, msg, 0)
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= 3:
-                    self._circuit_open_until = now_ts + 600  # 10 min circuit breaker
+                    self._circuit_open_until = now_ts + 600
             except Exception as e:
                 self._log(case_id, "datajud", False, str(e)[:200], 0)
                 self._consecutive_failures += 1
@@ -565,6 +646,38 @@ class MonitoringWorker(threading.Thread):
                     self._circuit_open_until = now_ts + 600
         else:
             self._log(case_id, "datajud", False, "circuit_open", 0)
+
+        # ---- OAB Lookup (se responsavel tem OAB cadastrada) ----
+        responsible_id = case.get("responsible_id")
+        if responsible_id:
+            try:
+                conn_user = self._conn()
+                try:
+                    user_row = conn_user.execute(
+                        "SELECT oab FROM users WHERE id = ?", (responsible_id,)
+                    ).fetchone()
+                finally:
+                    conn_user.close()
+                oab_text = (user_row["oab"] or "").strip() if user_row else ""
+                if oab_text:
+                    num_match = re.search(r"(\d{4,6})", oab_text)
+                    uf_match = re.search(r"/([A-Z]{2})", oab_text) or re.search(r"^([A-Z]{2})", oab_text)
+                    if num_match and uf_match:
+                        numero = num_match.group(1)
+                        uf = uf_match.group(1)
+                        try:
+                            oab_pubs = oab_lookup(numero, uf)
+                            if oab_pubs:
+                                ins = self._insert_dedupe_pubs(case_id, oab_pubs)
+                                total_new += ins
+                                if ins:
+                                    any_ok = True
+                                self._log(case_id, "oab", True,
+                                          f"OAB/{uf} {numero}: {len(oab_pubs)} pubs, {ins} novas", ins)
+                        except Exception as e:
+                            self._log(case_id, "oab", False, str(e)[:200], 0)
+            except Exception as e:
+                self._log(case_id, "oab", False, str(e)[:200], 0)
 
         # ---- DJE Scraper ----
         scraper_key = "TJRJ_EPROC" if tribunal == "TJRJ" else tribunal
@@ -598,15 +711,20 @@ class MonitoringWorker(threading.Thread):
                                     last_error="ultima checagem sem sucesso")
 
     def _insert_dedupe_pubs(self, case_id, pubs):
-        """Insere publicacoes DJE, deduplicando por titulo + case_id nos ultimos 30 dias."""
+        """Insere publicacoes DJE, deduplicando por titulo + case_id nos ultimos 30 dias.
+        NUNCA insere entradas de erro (scraper_error) como publicacao."""
         if not pubs:
             return 0
         conn = self._conn()
         try:
             inserted = 0
             for p in pubs:
+                if p.get("type") == "scraper_error":
+                    continue
                 title = (p.get("title") or "").strip()[:200]
                 if not title:
+                    continue
+                if title.lower().startswith("erro scraper"):
                     continue
                 # Dedup simples: existe um case_update com mesmo titulo + case_id nos ultimos 30 dias?
                 exists = conn.execute(
