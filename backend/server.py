@@ -268,6 +268,14 @@ def init_db():
             FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE SET NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
         )""",
+        """CREATE TABLE IF NOT EXISTS case_folders (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            label TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )""",
         """CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -1682,10 +1690,9 @@ def monitor_case_toggle(handler, case_id, body):
 def monitor_run_now(handler, case_id, body=None):
     """POST /api/cases/{id}/monitor/run — checagem imediata via Comunica PJE.
 
-    v2.5: busca publicacoes pela OAB do responsavel do caso (nao mais por CNJ).
-    Para cada publicacao retornada:
-      - se o CNJ ja tem caso cadastrado: insere como andamento
-      - se nao tem: cria caso novo + insere como primeiro andamento
+    v2.8: busca publicacoes pelo NUMERO DE PROCESSO (CNJ) do caso.
+    URL: https://comunica.pje.jus.br/consulta?siglaTribunal={TJ}&numeroProcesso={CNJ}
+    Auto-preenche dados do caso (classe, assunto, partes) a partir da publicacao.
     """
     user = require_auth(handler)
     if not user:
@@ -1697,57 +1704,79 @@ def monitor_run_now(handler, case_id, body=None):
     conn = db()
     try:
         row = conn.execute(
-            "SELECT c.id, c.responsible_id, u.oab AS responsible_oab "
+            "SELECT c.id, c.code AS cnj, c.responsible_id, c.title, c.area, c.court, "
+            "       u.oab AS responsible_oab, u.oab_uf AS responsible_oab_uf "
             "FROM cases c LEFT JOIN users u ON u.id = c.responsible_id "
             "WHERE c.id=? AND (c.deleted_at IS NULL OR c.deleted_at='')",
             (case_id,),
         ).fetchone()
         if not row:
             return json_response(handler, 404, {"error": "caso nao encontrado"})
+        cnj = (row["cnj"] or "").strip()
+        if not cnj or not _monitor.normalize_cnj(cnj):
+            return json_response(handler, 400, {"error": "caso sem CNJ valido cadastrado", "cnj": cnj})
+        cnj_fmt = _monitor.normalize_cnj(cnj)
+        # Determina UF: prioriza oab_uf do user, senao tenta extrair do CNJ
+        oab_uf = (row["responsible_oab_uf"] or "").strip().upper()
+        oab_num = ""
         oab_text = (row["responsible_oab"] or "").strip()
-        if not oab_text:
-            return json_response(handler, 400, {"error": "responsavel sem OAB cadastrada"})
-        oab_info = _monitor._parse_oab(oab_text)
-        if not oab_info["numero"] or not oab_info["uf"]:
-            return json_response(handler, 400, {"error": "OAB invalida", "oab": oab_text})
-        # Chama o Comunica PJE
+        if oab_text:
+            parsed = _monitor._parse_oab(oab_text)
+            oab_num = parsed.get("numero") or ""
+            if not oab_uf and parsed.get("uf"):
+                oab_uf = parsed["uf"]
+        if not oab_uf:
+            oab_uf = "RJ"  # fallback
+        # Chama o Comunica PJE por NUMERO DE PROCESSO
         try:
-            pubs = _monitor.scraper_pje(oab_info["numero"], oab_info["uf"])
+            res = _monitor.scraper_pje_for_case(cnj_fmt, oab_num, oab_uf)
         except Exception as e:
             return json_response(handler, 500, {"error": "falha no Comunica PJE", "detail": str(e)[:200]})
+        if res.get("error"):
+            return json_response(handler, 502, {"error": res["error"], "url": res.get("url", "")})
+        pubs = res.get("pubs", [])
+        case_info = res.get("case_info", {})
+        
+        # Auto-preencher dados do caso a partir da publicacao
+        auto_filled = {}
+        if case_info:
+            updates = []
+            params = []
+            if case_info.get("classe") and not row["area"]:
+                updates.append("area = ?"); params.append(case_info["classe"])
+                auto_filled["area"] = case_info["classe"]
+            if case_info.get("assunto") and not row["court"]:
+                updates.append("court = ?"); params.append(case_info["assunto"])
+                auto_filled["court"] = case_info["assunto"]
+            if updates:
+                params.append(case_id)
+                conn.execute(f"UPDATE cases SET {', '.join(updates)} WHERE id = ?", params)
+                conn.commit()
+        
         worker = MONITOR_WORKER.get("instance")
         total_inserted = 0
-        new_cases = 0
         sample_pubs = []
+        # Como ja temos o caso, NAO auto-criamos caso novo aqui - so inserimos andamentos
+        ins = worker._insert_dedupe_pubs_for_case(case_id, pubs) if worker else 0
+        total_inserted = ins
         for pub in pubs:
-            cnj = pub.get("cnj", "")
-            if not cnj:
-                continue
-            target_case_id = worker._find_case_by_cnj(cnj) if worker else None
-            is_new = False
-            if not target_case_id and worker:
-                target_case_id = worker._auto_create_case(pub, row["responsible_id"] or "")
-                if target_case_id:
-                    new_cases += 1
-                    is_new = True
-            if not target_case_id:
-                continue
-            ins = worker._insert_dedupe_pubs_for_case(target_case_id, [pub]) if worker else 0
-            total_inserted += ins
             sample_pubs.append({
                 "date": (pub.get("date") or "")[:10],
                 "title": (pub.get("title") or "")[:200],
-                "cnj": cnj,
-                "case_id": target_case_id,
-                "new_case": is_new,
+                "cnj": pub.get("cnj") or cnj_fmt,
+                "case_id": case_id,
+                "new_case": False,
                 "url": pub.get("url") or "",
             })
         result = {
             "source": "comunica_pje",
-            "oab": f"{oab_info['uf']} {oab_info['numero']}",
+            "cnj": cnj_fmt,
+            "tribunal": res.get("tribunal", ""),
             "pubs_found": len(pubs),
             "inserted": total_inserted,
-            "new_cases": new_cases,
+            "new_cases": 0,
+            "auto_filled": auto_filled,
+            "url": res.get("url", ""),
             "pubs": sample_pubs[:5],
         }
         # update last_check_at
@@ -1755,6 +1784,8 @@ def monitor_run_now(handler, case_id, body=None):
             worker._update_monitoring_state(case_id,
                 last_check_at=datetime.datetime.now().isoformat(timespec="seconds"),
                 error_count=0, last_error=None)
+        audit(user["id"], "monitor_run", "case", case_id, None,
+              {"pubs_found": len(pubs), "inserted": total_inserted, "auto_filled": auto_filled})
     finally:
         conn.close()
     return json_response(handler, 200, result)
@@ -1898,6 +1929,154 @@ def monitor_log_list(handler):
     return json_response(handler, 200, {"items": out})
 
 
+
+
+# ---- CASE FOLDERS (vincular pasta do sistema ao caso) ----
+
+def case_folder_set(handler, case_id, body):
+    """POST /api/cases/{id}/folder - vincula uma pasta do sistema ao caso."""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    body = body or {}
+    folder_path = (body.get("path") or "").strip()
+    label = (body.get("label") or "").strip() or None
+    if not folder_path:
+        return json_response(handler, 400, {"error": "path obrigatorio"})
+    # Validacao basica de seguranca: caminho absoluto e existente
+    import os as _os
+    if not _os.path.isabs(folder_path):
+        return json_response(handler, 400, {"error": "path deve ser absoluto"})
+    if not _os.path.isdir(folder_path):
+        return json_response(handler, 400, {"error": f"pasta nao encontrada: {folder_path}"})
+    conn = db()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM case_folders WHERE case_id=? AND path=?",
+            (case_id, folder_path),
+        ).fetchone()
+        if existing:
+            conn.execute("UPDATE case_folders SET label=?, updated_at=? WHERE id=?",
+                         (label, datetime.datetime.now().isoformat(timespec="seconds"), existing["id"]))
+            fid = existing["id"]
+        else:
+            fid = secrets.token_hex(8)
+            conn.execute(
+                "INSERT INTO case_folders(id, case_id, path, label, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (fid, case_id, folder_path, label,
+                 datetime.datetime.now().isoformat(timespec="seconds"),
+                 datetime.datetime.now().isoformat(timespec="seconds")),
+            )
+        conn.commit()
+        audit(user["id"], "update", "case_folder", case_id, None, {"path": folder_path, "label": label})
+    finally:
+        conn.close()
+    return json_response(handler, 200, {"ok": True, "id": fid, "path": folder_path, "label": label})
+
+
+def case_folder_unset(handler, case_id, body):
+    """DELETE /api/cases/{id}/folder - remove vinculo da pasta."""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    body = body or {}
+    folder_id = (body.get("id") or "").strip()
+    if not folder_id:
+        return json_response(handler, 400, {"error": "id obrigatorio"})
+    conn = db()
+    try:
+        conn.execute("DELETE FROM case_folders WHERE id=? AND case_id=?", (folder_id, case_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return json_response(handler, 200, {"ok": True})
+
+
+def case_folder_list_files(handler, case_id):
+    """GET /api/cases/{id}/folder/files - lista arquivos das pastas vinculadas."""
+    user = require_auth(handler)
+    if not user:
+        return
+    conn = db()
+    try:
+        folders = conn.execute(
+            "SELECT id, path, label, created_at FROM case_folders WHERE case_id=? ORDER BY created_at",
+            (case_id,),
+        ).fetchall()
+        folders_list = [dict(f) for f in folders]
+    finally:
+        conn.close()
+    
+    import os as _os
+    files = []
+    for f in folders_list:
+        p = f["path"]
+        if not _os.path.isdir(p):
+            files.append({
+                "folder_id": f["id"], "folder_path": p, "folder_label": f.get("label") or "",
+                "error": f"pasta inacessivel: {p}",
+                "files": [],
+            })
+            continue
+        try:
+            entries = []
+            for name in sorted(_os.listdir(p)):
+                full = _os.path.join(p, name)
+                try:
+                    st = _os.stat(full)
+                    entries.append({
+                        "name": name,
+                        "path": full,
+                        "size": st.st_size,
+                        "mtime": datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+                        "is_dir": _os.path.isdir(full),
+                        "ext": (_os.path.splitext(name)[1] or "").lower().lstrip("."),
+                    })
+                except Exception:
+                    continue
+            files.append({
+                "folder_id": f["id"], "folder_path": p, "folder_label": f.get("label") or "",
+                "files": entries,
+            })
+        except Exception as e:
+            files.append({
+                "folder_id": f["id"], "folder_path": p, "folder_label": f.get("label") or "",
+                "error": str(e)[:200], "files": [],
+            })
+    
+    return json_response(handler, 200, {"folders": folders_list, "lists": files})
+
+
+def case_folder_read_file(handler, case_id, body):
+    """POST /api/cases/{id}/folder/read - le conteudo de um arquivo (somente texto)."""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    body = body or {}
+    file_path = (body.get("path") or "").strip()
+    if not file_path:
+        return json_response(handler, 400, {"error": "path obrigatorio"})
+    import os as _os
+    if not _os.path.isabs(file_path):
+        return json_response(handler, 400, {"error": "path deve ser absoluto"})
+    if not _os.path.isfile(file_path):
+        return json_response(handler, 400, {"error": "arquivo nao encontrado"})
+    if _os.path.getsize(file_path) > 2 * 1024 * 1024:
+        return json_response(handler, 400, {"error": "arquivo maior que 2MB"})
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fp:
+            content = fp.read(200_000)
+    except UnicodeDecodeError:
+        return json_response(handler, 400, {"error": "arquivo binario (nao UTF-8)"})
+    return json_response(handler, 200, {"path": file_path, "content": content, "size": len(content)})
+
+
 # Rotas de monitoramento (wrappers definidos ANTES)
 def monitor_case_toggle_with_id(handler, case_id, body):
     return monitor_case_toggle(handler, case_id, body)
@@ -1913,6 +2092,11 @@ route("GET",  "/api/monitoring/status",        monitor_status)
 route("GET",  "/api/monitoring/settings",      monitor_settings_get)
 route("POST", "/api/monitoring/settings",      monitor_settings_set)
 route("GET",  "/api/monitoring/log",           monitor_log_list)
+
+route("POST",   "/api/cases/{id}/folder",        case_folder_set)
+route("DELETE", "/api/cases/{id}/folder",        case_folder_unset)
+route("GET",    "/api/cases/{id}/folder/files",  case_folder_list_files)
+route("POST",   "/api/cases/{id}/folder/read",   case_folder_read_file)
 
 route("GET", "/api/audit",            audit_list)
 route("GET", "/api/audit/{id}",       audit_get_detail)

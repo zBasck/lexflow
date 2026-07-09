@@ -126,6 +126,53 @@ def uf_to_tribunal(uf: str) -> str:
     return mapping.get(uf, uf or "TJRJ")
 
 
+
+
+# --- CNJ -> Tribunal (sigla usada no Comunica PJE) ---
+
+_CNJ_TRIBUNAL_BY_JUSTICA = {
+    # Justica Estadual (8) - identificado pelo segmento 1 do CNJ (digito 13)
+    # O nono digito (segmento 1.0) identifica o tribunal: 8 + codigo TJ
+    "8.01": "TJAC", "8.02": "TJAL", "8.03": "TJAP", "8.04": "TJAM", "8.05": "TJBA",
+    "8.06": "TJCE", "8.07": "TJDFT", "8.08": "TJES", "8.09": "TJGO", "8.10": "TJMA",
+    "8.11": "TJMT", "8.12": "TJMS", "8.13": "TJMG", "8.14": "TJPA", "8.15": "TJPB",
+    "8.16": "TJPR", "8.17": "TJPE", "8.18": "TJPI", "8.19": "TJRJ", "8.20": "TJRN",
+    "8.21": "TJRS", "8.22": "TJRO", "8.23": "TJRR", "8.24": "TJSC", "8.25": "TJSP",
+    "8.26": "TJSE", "8.27": "TJTO",
+    # Justica Federal (4)
+    "4.01": "TRF1", "4.02": "TRF2", "4.03": "TRF3", "4.04": "TRF4", "4.05": "TRF5",
+    # Justica do Trabalho (5)
+    "5.01": "TRT1", "5.02": "TRT2", "5.03": "TRT3", "5.04": "TRT4", "5.05": "TRT5",
+    "5.06": "TRT6", "5.07": "TRT7", "5.08": "TRT8", "5.09": "TRT9", "5.10": "TRT10",
+    "5.11": "TRT11", "5.12": "TRT12", "5.13": "TRT13", "5.14": "TRT14", "5.15": "TRT15",
+    "5.16": "TRT16", "5.17": "TRT17", "5.18": "TRT18", "5.19": "TRT19", "5.20": "TRT20",
+    "5.21": "TRT21", "5.22": "TRT22", "5.23": "TRT23", "5.24": "TRT24",
+    # Justica Eleitoral (6)
+    "6.00": "TSE",
+    # Justica Militar (7)
+    "7.00": "STM",
+    # Justica Superior (1, 2, 3)
+    "1.00": "STF", "2.00": "STJ", "3.00": "STJ",
+}
+
+
+def cnj_to_tribunal(cnj: str) -> str:
+    """Extrai a sigla do tribunal a partir do CNJ (NNNNNNN-NN.NNN.N.NN.NNNN).
+    Ex: 0801610-47.2026.8.19.0068 -> 'TJRJ' (segmento 1=8, segmento 1.0=19 -> 8.19).
+    """
+    n = normalize_cnj(cnj)
+    if not n:
+        return ""
+    # n formatado: NNNNNNN-NN.NNN.N.NN.NNNN
+    # Pega o terceiro segmento (justica) e o quarto (tribunal)
+    parts = n.split(".")
+    if len(parts) >= 4:
+        justica = parts[2]  # 8, 4, 5, 6, 7, 1, 2, 3
+        tribunal = parts[3]  # 19, 01, 02, ...
+        return _CNJ_TRIBUNAL_BY_JUSTICA.get(f"{justica}.{tribunal}", "")
+    return ""
+
+
 # --- Comunica PJE scraper ---
 
 COMUNICA_PJE_URL = "https://comunica.pje.jus.br/consulta"
@@ -271,21 +318,36 @@ def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int
 
 
 
-def scraper_pje(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> list:
-    """Consulta o Comunica PJE por OAB e retorna lista de publicacoes."""
-    if not numero_oab:
-        return []
-    numero_oab = re.sub(r"[^0-9]", "", str(numero_oab))
-    if not numero_oab:
-        return []
+def scraper_pje(numero_processo: str = "", numero_oab: str = "", uf: str = "RJ", timeout: int = 30) -> list:
+    """Consulta o Comunica PJE e retorna lista de publicacoes.
+    
+    v2.8: busca por NUMERO DE PROCESSO (CNJ) e sigla do tribunal.
+    Aceita tambem busca por OAB (compatibilidade).
+    URL: https://comunica.pje.jus.br/consulta?siglaTribunal=TJRJ&numeroProcesso=08016104720268190068
+    """
+    numero_processo = (numero_processo or "").strip()
+    numero_oab = re.sub(r"[^0-9]", "", str(numero_oab or ""))
     uf = (uf or "RJ").upper().strip()
-    sigla_tribunal = uf_to_tribunal(uf)
-    url = (
-        f"{COMUNICA_PJE_URL}"
-        f"?siglaTribunal={urllib.parse.quote(sigla_tribunal)}"
-        f"&numeroOab={urllib.parse.quote(numero_oab)}"
-        f"&ufOab={urllib.parse.quote(uf)}"
-    )
+    
+    if not numero_processo and not numero_oab:
+        return []
+    
+    # Determinar sigla do tribunal
+    if numero_processo:
+        sigla_tribunal = cnj_to_tribunal(numero_processo) or uf_to_tribunal(uf)
+    else:
+        sigla_tribunal = uf_to_tribunal(uf)
+    
+    qs = f"siglaTribunal={urllib.parse.quote(sigla_tribunal)}"
+    if numero_processo:
+        # Limpar CNJ: so digitos
+        digits = re.sub(r"[^0-9]", "", numero_processo)
+        if len(digits) == 20:
+            qs += f"&numeroProcesso={urllib.parse.quote(digits)}"
+    if numero_oab:
+        qs += f"&numeroOab={urllib.parse.quote(numero_oab)}"
+        qs += f"&ufOab={urllib.parse.quote(uf)}"
+    url = f"{COMUNICA_PJE_URL}?{qs}"
     # Tenta primeiro a API JSON do Comunica PJE (sem dependencia de JS no client).
     # Fallback para o HTML (SPA) se a API nao responder.
     pubs = _scraper_pje_api(numero_oab, uf, sigla_tribunal, timeout=timeout)
@@ -315,6 +377,95 @@ def scraper_pje(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> list:
         p["tribunal"] = sigla_tribunal
         p["oab"] = f"{uf} {numero_oab}"
     return pubs
+
+
+
+
+# --- Extracao de dados do caso a partir do texto da publicacao ---
+
+def _extract_case_info_from_text(text: str) -> dict:
+    """Extrai classe, assunto, partes e ultimo andamento de uma publicacao do DJe.
+    Retorna dict com chaves: classe, assunto, partes, valor, last_movement.
+    """
+    info = {"classe": None, "assunto": None, "partes": None, "valor": None, "last_movement": None}
+    if not text:
+        return info
+    t = re.sub(r"\s+", " ", text).strip()
+    
+    # Classe
+    m = re.search(r"Classe\s*[:\-]?\s*([A-Za-zÀ-ÿ\s\-]{3,40}?)(?=\s*(?:Assunto|Parte|Valor|Processo|Advog|Número|$))", t, re.I)
+    if m:
+        info["classe"] = m.group(1).strip().rstrip(",.;:")[:60]
+    
+    # Assunto
+    m = re.search(r"Assunto\s*[:\-]?\s*([A-Za-zÀ-ÿ\s\-]{3,80}?)(?=\s*(?:Classe|Parte|Valor|Processo|Advog|Número|$))", t, re.I)
+    if m:
+        info["assunto"] = m.group(1).strip().rstrip(",.;:")[:120]
+    
+    # Partes (formato comum: "Parte X contra Parte Y" ou "Autor: X / Réu: Y")
+    m = re.search(r"(?:Partes?|Polo\s+(?:Ativo|Passivo))\s*[:\-]?\s*(.{20,300}?)(?=\s*(?:Classe|Assunto|Valor|Processo|Vara|Comarca|$))", t, re.I)
+    if m:
+        info["partes"] = m.group(1).strip().rstrip(",.;:")[:300]
+    
+    # Valor
+    m = re.search(r"Valor\s*(?:da\s*causa)?\s*[:\-]?\s*(R\$\s*[\d.,]+|\d+[\d.,]*)", t, re.I)
+    if m:
+        info["valor"] = m.group(1).strip()
+    
+    return info
+
+
+def scraper_pje_for_case(cnj: str, oab_num: str = "", oab_uf: str = "RJ", timeout: int = 30) -> dict:
+    """Busca publicacoes de um processo especifico no Comunica PJE.
+    Retorna dict com: pubs (lista), case_info (classe, assunto, partes, etc.).
+    """
+    out = {"pubs": [], "case_info": {}, "url": "", "tribunal": "", "error": None}
+    if not cnj:
+        out["error"] = "CNJ vazio"
+        return out
+    sigla = cnj_to_tribunal(cnj) or uf_to_tribunal(oab_uf)
+    out["tribunal"] = sigla
+    digits = re.sub(r"[^0-9]", "", cnj)
+    if len(digits) != 20:
+        out["error"] = f"CNJ invalido: {cnj} (esperado 20 digitos, obtido {len(digits)})"
+        return out
+    url = f"{COMUNICA_PJE_URL}?siglaTribunal={urllib.parse.quote(sigla)}&numeroProcesso={urllib.parse.quote(digits)}"
+    out["url"] = url
+    
+    # Primeiro tenta a API JSON
+    pubs = _scraper_pje_api(digits, oab_uf, sigla, timeout=timeout)
+    if pubs:
+        for p in pubs:
+            p["url"] = url
+            p["tribunal"] = sigla
+            p["oab"] = f"{oab_uf} {oab_num}".strip()
+        out["pubs"] = pubs
+        return out
+    
+    # Fallback HTML
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (LexFlow/2.8)", "Accept": "text/html,application/xhtml+xml"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        out["error"] = f"falha HTTP: {str(e)[:120]}"
+        return out
+    
+    pubs = _parse_pje_html(html)
+    for p in pubs:
+        p["url"] = url
+        p["tribunal"] = sigla
+        p["oab"] = f"{oab_uf} {oab_num}".strip()
+    out["pubs"] = pubs
+    
+    # Tentar extrair dados do caso do HTML
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    out["case_info"] = _extract_case_info_from_text(text)
+    return out
 
 
 # --- Worker thread ---

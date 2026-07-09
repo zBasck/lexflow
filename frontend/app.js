@@ -737,6 +737,11 @@
     const cid = S.params && S.params.id;
     let c;
     try { c = await API.get('/api/cases/' + cid); } catch (e) { return AppShell('Caso nao encontrado', h('p', null, 'O caso solicitado nao foi encontrado.')); }
+    // Carrega pastas vinculadas (arquivos reais do sistema)
+    try {
+      const folderRes = await API.req('GET', '/api/cases/' + cid + '/folder/files');
+      S._caseFolders = folderRes.lists || [];
+    } catch (e) { S._caseFolders = []; }
 
   const onToggleMonitor = async () => {
     if (!S.user) return;
@@ -862,6 +867,39 @@
           ),
           h('div', { class: 'card' },
             h('div', { class: 'card-header' },
+              h('h3', null, '📁 Pasta do sistema'),
+              h('button', { class: 'btn btn-sm btn-primary', onclick: () => openFolderModal(cid) }, '+ Vincular pasta')
+            ),
+            (S._caseFolders || []).length === 0
+              ? h('div', { class: 'empty' },
+                  h('p', { class: 'small muted' }, 'Nenhuma pasta vinculada. Vincule uma pasta do seu computador para acessar documentos reais do caso.')
+                )
+              : h('div', null, ...S._caseFolders.map(f =>
+                  h('div', { style: { padding: '10px 0', borderBottom: '1px solid var(--line-2)' } },
+                    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } },
+                      h('div', null,
+                        h('div', { class: 'strong' }, (f.folder_label || 'Pasta') + ' (' + (f.files || []).length + ' arquivo(s))'),
+                        h('div', { class: 'small muted' }, f.folder_path)
+                      ),
+                      h('button', { class: 'btn btn-sm btn-danger', onclick: () => unbindFolder(cid, f.folder_id) }, 'Desvincular')
+                    ),
+                    f.error ? h('div', { class: 'small', style: { color: 'var(--danger)' } }, '⚠ ' + f.error) : null,
+                    (f.files || []).length === 0 && !f.error
+                      ? h('div', { class: 'small muted' }, 'Pasta vazia')
+                      : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '8px' } },
+                          ...(f.files || []).slice(0, 20).map(file =>
+                            h('div', { class: 'small', style: { padding: '6px 10px', background: 'var(--bg-2)', borderRadius: '4px', border: '1px solid var(--line-2)' } },
+                              file.is_dir ? '📂 ' : '📄 ',
+                              h('strong', null, file.name),
+                              file.size > 0 ? h('span', { class: 'muted' }, ' (' + (file.size < 1024 ? file.size + ' B' : file.size < 1048576 ? Math.round(file.size/1024) + ' KB' : Math.round(file.size/1048576) + ' MB') + ')') : null
+                            )
+                          )),
+                    (f.files || []).length > 20 ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, '+' + (f.files.length - 20) + ' mais') : null
+                  )
+                ))
+          ),
+          h('div', { class: 'card' },
+            h('div', { class: 'card-header' },
               h('h3', null, 'Documentos (' + caseDocs.length + ')'),
               h('button', { class: 'btn btn-sm btn-primary', onclick: () => openDocumentModal(cid) }, '+ Documento')
             ),
@@ -970,6 +1008,67 @@
       )
     };
     render();
+  }
+
+  function openFolderModal(caseId) {
+    const m = h('form', { id: 'folder-form', onsubmit: async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = {
+        path: fd.get('path'),
+        label: fd.get('label') || '',
+      };
+      try {
+        await API.req('POST', '/api/cases/' + caseId + '/folder', data);
+        toast('Pasta vinculada', 'success');
+        // Recarrega a pagina do caso
+        S._caseFolders = null;
+        await CaseDetailPage.call(null, caseId);
+        // melhor: chamar render() direto - o CaseDetailPage ja recarrega folders
+        S._caseFolders = (await API.req('GET', '/api/cases/' + caseId + '/folder/files')).lists || [];
+        closeModal();
+        render();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }},
+      h('div', { class: 'modal-info' },
+        h('strong', null, 'Sobre esta funcionalidade:'),
+        h('br'),
+        'Vincule uma pasta do seu computador onde estao os arquivos do processo. ',
+        'O sistema vai listar os arquivos da pasta para acesso rapido. ',
+        'A pasta deve existir e voce deve ter permissao de leitura.'
+      ),
+      h('div', { class: 'form-group' },
+        h('label', null, 'Caminho absoluto da pasta *'),
+        h('input', { type: 'text', name: 'path', required: true, placeholder: 'C:\\Documentos\\Processos\\2026\\001', style: { fontFamily: 'monospace' } })
+      ),
+      h('div', { class: 'form-group' },
+        h('label', null, 'Rotulo (opcional)'),
+        h('input', { type: 'text', name: 'label', placeholder: 'ex: Peticoes iniciais' })
+      )
+    );
+    S.modal = {
+      title: 'Vincular pasta do sistema',
+      body: m,
+      footer: h('span', null,
+        h('button', { class: 'btn btn-ghost', onclick: closeModal }, 'Cancelar'),
+        h('button', { class: 'btn btn-primary', onclick: () => document.getElementById('folder-form').requestSubmit() }, 'Vincular')
+      )
+    };
+    renderModal();
+  }
+
+  async function unbindFolder(caseId, folderId) {
+    if (!confirm('Desvincular esta pasta? Os arquivos do sistema NAO serao apagados.')) return;
+    try {
+      await API.req('DELETE', '/api/cases/' + caseId + '/folder', { id: folderId });
+      toast('Pasta desvinculada', 'success');
+      S._caseFolders = (await API.req('GET', '/api/cases/' + caseId + '/folder/files')).lists || [];
+      render();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   }
 
   function openDocumentModal(caseId) {
@@ -1726,6 +1825,28 @@
     try { settings = await API.get('/api/settings'); } catch (e) {}
     const set = settings || {};
 
+    // Carregar valores do monitoramento no card de Configuracoes
+    setTimeout(() => {
+      API.req('GET', '/api/monitoring/settings').then(s => {
+        const intervalEl = document.getElementById('mon-interval');
+        const desktopEl = document.getElementById('mon-desktop');
+        const emailEl = document.getElementById('mon-email');
+        const emailAddrEl = document.getElementById('mon-email-addr');
+        const emailRow = document.getElementById('mon-email-row');
+        if (intervalEl) intervalEl.value = s['monitor.default_interval_minutes'] || '60';
+        if (desktopEl) desktopEl.checked = s['monitor.notify_desktop'] === '1';
+        if (emailEl) emailEl.checked = s['monitor.notify_email'] === '1';
+        if (emailAddrEl) emailAddrEl.value = s['monitor.notify_email_address'] || '';
+        if (emailRow) emailRow.style.display = emailEl && emailEl.checked ? 'block' : 'none';
+        if (emailEl && !emailEl.dataset.bound) {
+          emailEl.dataset.bound = '1';
+          emailEl.addEventListener('change', () => {
+            emailRow.style.display = emailEl.checked ? 'block' : 'none';
+          });
+        }
+      }).catch(() => {});
+    }, 0);
+
     // Liga o handler de import de backup apos o DOM estar pronto
     setTimeout(() => {
       const fileInput = document.getElementById('import-backup-file');
@@ -1806,6 +1927,38 @@
             h('p', { class: 'small' }, h('strong', null, 'Usuario: '), S.user.name + ' (' + S.user.email + ')'),
             h('p', { class: 'small' }, h('strong', null, 'Funcao: '), S.user.role)
           )
+        )
+      ),
+      h('div', { class: 'card' },
+        h('div', { class: 'card-header' }, h('h3', null, '🔔 Monitoramento (Comunica PJE)')),
+        h('div', { class: 'modal-info' },
+          h('strong', null, 'Como funciona:'),
+          h('br'),
+          'Cada caso com CNJ cadastrado pode ser sincronizado individualmente em sua pagina, ',
+          'buscando publicações no ',
+          h('a', { href: 'https://comunica.pje.jus.br', target: '_blank', rel: 'noopener' }, 'Comunica PJE'),
+          ' atraves do link ',
+          h('code', null, 'https://comunica.pje.jus.br/consulta?siglaTribunal={TJ}&numeroProcesso={CNJ}'),
+          '. O sistema usa a UF da OAB do responsavel e a sigla do tribunal extraida do proprio CNJ. ',
+          'Para cada publicação encontrada, os dados do caso sao auto-preenchidos (classe, assunto, vara) ',
+          'e a publicação vira um andamento do caso. ',
+          'A consulta é publica e nao exige chave de API.'
+        ),
+        h('div', { class: 'form-row' },
+          h('label', null, 'Intervalo padrao (minutos)'),
+          h('input', { type: 'number', id: 'mon-interval', min: '5', max: '1440', value: '60' })
+        ),
+        h('div', { class: 'form-row-inline' },
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-desktop' }), ' Notificacao nativa do navegador'),
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-email' }), ' Notificar por e-mail')
+        ),
+        h('div', { class: 'form-row', id: 'mon-email-row', style: { display: 'none' } },
+          h('label', null, 'Endereco de e-mail'),
+          h('input', { type: 'email', id: 'mon-email-addr', placeholder: 'advogado@escritorio.com.br' })
+        ),
+        h('div', { style: { marginTop: '12px' } },
+          h('button', { class: 'btn btn-primary', onclick: () => saveMonSettings() }, 'Salvar monitoramento'),
+          h('button', { class: 'btn btn-ghost', style: { marginLeft: '8px' }, onclick: () => goTo('monitoring') }, 'Ir para pagina de Monitoramento')
         )
       )
     );
@@ -2270,70 +2423,48 @@
       )
     );
 
-    // Calcular estatisticas OAB
+    // Estatisticas OAB
     const casesWithOAB = items.filter(it => it.responsible_oab).length;
     const casesNoOAB = items.filter(it => !it.responsible_oab).length;
 
     return AppShell('🔔 Monitoramento de Processos',
       h('div', { class: 'mon-page' },
-      h('div', { class: 'page-header' },
-        h('h1', null, '🔔 Monitoramento de Processos'),
-        h('p', { class: 'page-subtitle' }, 'Datajud (CNJ, gratuito) + DJe dos seus tribunais + monitoramento por OAB'),
-        h('div', { class: 'mon-header-actions' },
-          h('button', { class: 'btn-secondary', onclick: () => openMonitoringSettings() }, '⚙ Configurações'),
-          h('button', { class: 'btn-secondary', onclick: async () => {
-            await loadAll(); render(); toast('Atualizado', 'ok');
-          } }, '🔄 Atualizar')
-        )
-      ),
-      h('div', { class: 'mon-oab-banner' },
-        h('strong', null, '🔎 Monitoramento por OAB:'),
-        ' ',
-        casesWithOAB > 0
-          ? (casesWithOAB + ' caso(s) tem OAB do responsavel cadastrada — publicacoes serao inseridas automaticamente.')
-          : 'Nenhum caso com OAB do responsavel. Cadastre OAB em Equipe > Editar advogado para ativar busca automatica por OAB.',
-        (casesNoOAB > 0 && casesWithOAB === 0)
-          ? h('div', { class: 'mon-oab-banner-cta' },
-              h('a', { href: '#', onclick: (e) => { e.preventDefault(); goTo('team'); } }, '→ Cadastrar OAB agora'))
-          : null
-      ),
-
-      h('div', { class: 'mon-info' },
-        h('div', null, '💡 Vá até a página de um caso, na aba "Movimentações", e clique em "🔔 Monitorar" para ligar o monitoramento.'),
-        h('div', { class: 'mon-info-cases' },
-          h('strong', null, 'Casos disponíveis:'),
-          (S.data.cases || []).length,
-          ' · ',
-          h('strong', null, 'Monitorados:'),
-          items.filter(i => i.status === 'active').length,
-          ' · ',
-          h('strong', null, 'Pausados:'),
-          items.filter(i => i.status === 'paused').length
-        )
-      ),
-
-      items.length === 0
-        ? h('div', { class: 'mon-empty' },
-            h('div', null, '📭 Nenhum caso está sendo monitorado ainda.'),
-            h('div', { class: 'mon-empty-sub' }, 'Abra um caso e ative o monitoramento na aba de movimentações.')
+        h('div', { class: 'page-header' },
+          h('h1', null, '🔔 Monitoramento de Processos'),
+          h('p', { class: 'page-subtitle' }, 'Comunica PJE - busca por numero de processo (CNJ) + monitoramento por OAB'),
+          h('div', { class: 'mon-header-actions' },
+            h('button', { class: 'btn-secondary', onclick: () => goTo('settings') }, '⚙ Configurações'),
+            h('button', { class: 'btn-secondary', onclick: async () => { await loadAll(); render(); toast('Atualizado', 'ok'); } }, '🔄 Atualizar')
           )
-        : h('div', { class: 'mon-list' }, items.map(row)),
-
-      h('div', { class: 'mon-log-section' },
-        h('h2', null, '📜 Últimas checagens'),
-        log.length === 0
-          ? h('div', { class: 'mon-empty' }, 'Nenhuma checagem registrada.')
-          : h('div', { class: 'mon-log' },
-              log.map(l => h('div', { class: 'mon-log-row ' + (l.ok ? 'ok' : 'err') },
-                h('span', { class: 'mon-log-time' }, fmtDateTime(l.checked_at)),
-                h('span', { class: 'mon-log-src' }, l.source),
-                h('span', { class: 'mon-log-case' }, l.case_title || '—'),
-                h('span', { class: 'mon-log-msg' }, l.message || (l.ok ? 'OK' : 'falhou')),
-                l.movements_found > 0 ? h('span', { class: 'mon-log-new' }, '+' + l.movements_found + ' novos') : null
-              ))
+        ),
+        h('div', { class: 'mon-oab-banner' },
+          h('strong', null, '🔎 Busca por CNJ (Comunica PJE):'),
+          ' Cada caso monitorado busca publicacoes pelo seu CNJ no ',
+          h('a', { href: 'https://comunica.pje.jus.br', target: '_blank', rel: 'noopener' }, 'Comunica PJE'),
+          '. Sincronize um caso em sua pagina para puxar publicacoes dele.'
+        ),
+        items.length === 0
+          ? h('div', { class: 'mon-empty' },
+              h('div', null, '📭 Nenhum caso está sendo monitorado ainda.'),
+              h('div', { class: 'mon-empty-sub' }, 'Abra um caso e ative o monitoramento na aba de movimentações.')
             )
+          : h('div', { class: 'mon-list' }, items.map(row)),
+        h('div', { class: 'mon-log-section' },
+          h('h2', null, '📜 Últimas checagens'),
+          log.length === 0
+            ? h('div', { class: 'mon-empty' }, 'Nenhuma checagem registrada.')
+            : h('div', { class: 'mon-log' },
+                log.map(l => h('div', { class: 'mon-log-row ' + (l.ok ? 'ok' : 'err') },
+                  h('span', { class: 'mon-log-time' }, fmtDateTime(l.checked_at)),
+                  h('span', { class: 'mon-log-src' }, l.source),
+                  h('span', { class: 'mon-log-case' }, l.case_title || '—'),
+                  h('span', { class: 'mon-log-msg' }, l.message || (l.ok ? 'OK' : 'falhou')),
+                  l.movements_found > 0 ? h('span', { class: 'mon-log-new' }, '+' + l.movements_found + ' novos') : null
+                ))
+              )
+        )
       )
-    ));
+    );
   }
 
   function openPjePubsModal(it, pubs) {
