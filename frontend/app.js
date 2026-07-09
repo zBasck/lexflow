@@ -385,11 +385,13 @@
           navItem('clients', '👥', 'Clientes'),
           h('div', { class: 'sidebar-section' }, 'Operacao'),
           navItem('agenda', '📅', 'Agenda'),
+          navItem('kanban', '🎯', 'Kanban'),
           navItem('tasks', '✅', 'Tarefas'),
           navItem('documents', '📄', 'Documentos'),
           h('div', { class: 'sidebar-section' }, 'Gestao'),
           navItem('finance', '💰', 'Financeiro'),
           navItem('team', '⚖️', 'Equipe'),
+          navItem('monitoring', '🔔', 'Monitoramento'),
           navItem('settings', '⚙️', 'Configuracoes'),
           (S.user && (S.user.role === 'Socio' || S.user.role === 'Advogado')) ? navItem('audit', '🔍', 'Auditoria') : null,
           navItem('trash', '🗑️', 'Lixeira')
@@ -726,6 +728,25 @@
     const cid = S.params && S.params.id;
     let c;
     try { c = await API.get('/api/cases/' + cid); } catch (e) { return AppShell('Caso nao encontrado', h('p', null, 'O caso solicitado nao foi encontrado.')); }
+
+  const onToggleMonitor = async () => {
+    if (!S.user) return;
+    try {
+      // Verifica status atual
+      const st = await API.req('GET', '/api/monitoring/status');
+      const existing = (st.items || []).find(i => i.case_id === cid);
+      const isActive = existing && existing.status === 'active';
+      const interval = prompt('Intervalo em minutos (5-1440):', existing ? String(existing.interval_minutes) : '60');
+      if (interval === null) return;
+      const min = Math.max(5, Math.min(1440, parseInt(interval) || 60));
+      const newStatus = isActive ? 'paused' : 'active';
+      await API.req('POST', '/api/cases/' + cid + '/monitor', { status: newStatus, interval_minutes: min });
+      toast(newStatus === 'active' ? 'Monitoramento ativado (checagem a cada ' + min + ' min)' : 'Monitoramento pausado', 'ok');
+    } catch (e) {
+      toast('Erro: ' + e.message, 'err');
+    }
+  };
+
     let updates = [];
     try { updates = await API.get('/api/cases/' + cid + '/updates'); } catch (e) {}
     const client = S.data.clients.find(cl => cl.id === c.client_id);
@@ -851,7 +872,10 @@
           h('div', { class: 'card mb-3' },
             h('div', { class: 'card-header' },
               h('h3', null, 'Linha do tempo'),
-              h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento')
+              h('div', { style: 'display:flex;gap:6px' },
+                h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento'),
+                h('button', { class: 'btn btn-sm', id: 'btn-monitor-case', onclick: onToggleMonitor, style: 'background:#f1f5f9;color:#1e293b;border:1px solid #cbd5e1' }, '🔔 Monitorar...')
+              )
             ),
             updates.length === 0 ? h('div', { class: 'empty' }, h('p', null, 'Nenhum andamento registrado'))
               : h('div', { class: 'timeline' }, ...updates.map(u => h('div', { class: 'timeline-item' },
@@ -1927,7 +1951,9 @@
           case 'case-detail': main = await CaseDetailPage(); break;
           case 'clients':     main = ClientsPage(); break;
           case 'agenda':      main = AgendaPage(); break;
+          case 'kanban':      main = await KanbanPage(); break;
           case 'tasks':       main = TasksPage(); break;
+          case 'monitoring':  main = await MonitoringPage(); break;
           case 'finance':     main = FinancePage(); break;
           case 'documents':   main = DocumentsPage(); break;
           case 'team':        main = TeamPage(); break;
@@ -1973,3 +1999,348 @@
     setInterval(() => { if (S.token) loadNotifications(); }, 60000);
   })();
 })();
+
+
+// ============================================================================
+// KANBAN PAGE — tarefas agrupadas por urgencia/prazo
+// ============================================================================
+const KANBAN_COLUMNS = [
+  { key: 'overdue',  title: 'Atrasado',   color: '#dc2626',  bg: '#fee2e2' },
+  { key: 'today',    title: 'Hoje',       color: '#ea580c',  bg: '#ffedd5' },
+  { key: 'week',     title: 'Esta semana',color: '#2563eb',  bg: '#dbeafe' },
+  { key: 'later',    title: 'Mais tarde', color: '#64748b',  bg: '#f1f5f9' },
+];
+
+function _kanbanBucket(task) {
+  // Tarefas concluidas vao para "Mais tarde" (fechadas), exceto se o user quiser ver de outro jeito
+  if (task.status === 'concluida') return 'later';
+  if (!task.due_date) return 'later';
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const d = new Date(task.due_date + 'T00:00:00');
+  const diff = Math.floor((d - today) / 86400000);
+  if (diff < 0) return 'overdue';
+  if (diff === 0) return 'today';
+  if (diff <= 7) return 'week';
+  return 'later';
+}
+
+async function KanbanPage() {
+  const tasks = (S.data.tasks || []).slice();
+  const cases = S.data.cases || [];
+  const users = S.data.users || [];
+  const caseTitle = (id) => (cases.find(c => c.id === id) || {}).title || '—';
+  const userName = (id) => (users.find(u => u.id === id) || {}).name || '—';
+
+  const cols = {};
+  for (const c of KANBAN_COLUMNS) cols[c.key] = [];
+  for (const t of tasks) cols[_kanbanBucket(t)].push(t);
+  // ordena por data
+  for (const c of KANBAN_COLUMNS) cols[c.key].sort((a,b) => (a.due_date||'9999').localeCompare(b.due_date||'9999'));
+
+  const card = (t) => {
+    const priColor = { alta: '#dc2626', media: '#ea580c', baixa: '#64748b' }[t.priority] || '#64748b';
+    return h('div', {
+      class: 'kanban-card',
+      draggable: 'true',
+      ondragstart: (e) => { e.dataTransfer.setData('text/plain', t.id); e.dataTransfer.effectAllowed = 'move'; },
+      onclick: () => { S.editing = { entity: 'tasks', id: t.id }; openModal(); },
+    },
+      h('div', { class: 'kanban-card-pri', style: `background:${priColor}` }),
+      h('div', { class: 'kanban-card-title' }, t.title || '(sem titulo)'),
+      h('div', { class: 'kanban-card-meta' },
+        t.due_date ? h('span', { class: 'kanban-due' }, '📅 ' + t.due_date) : null,
+        t.case_id ? h('span', { class: 'kanban-case' }, '📋 ' + (caseTitle(t.case_id) || '').slice(0, 30)) : null,
+      ),
+      t.responsible_id ? h('div', { class: 'kanban-resp' }, '👤 ' + userName(t.responsible_id)) : null,
+    );
+  };
+
+  const column = (cfg) => h('div', {
+    class: 'kanban-col',
+    ondragover: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; },
+    ondrop: async (e) => {
+      e.preventDefault();
+      const taskId = e.dataTransfer.getData('text/plain');
+      if (!taskId) return;
+      // Move para a coluna alvo
+      const newDate = (() => {
+        const today = new Date();
+        if (cfg.key === 'overdue') {
+          const d = new Date(today); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10);
+        }
+        if (cfg.key === 'today') return today.toISOString().slice(0,10);
+        if (cfg.key === 'week') { const d = new Date(today); d.setDate(d.getDate() + 3); return d.toISOString().slice(0,10); }
+        if (cfg.key === 'later') { const d = new Date(today); d.setDate(d.getDate() + 30); return d.toISOString().slice(0,10); }
+        return null;
+      })();
+      try {
+        await API.req('PUT', '/api/tasks/' + taskId, {
+          due_date: newDate,
+          status: cfg.key === 'overdue' ? 'pendente' : (cfg.key === 'later' && !newDate ? 'pendente' : 'pendente')
+        });
+        toast('Tarefa movida para "' + cfg.title + '"', 'ok');
+        await loadAll();
+        render();
+      } catch (err) {
+        toast('Erro ao mover: ' + err.message, 'err');
+      }
+    },
+  },
+    h('div', { class: 'kanban-col-header', style: `background:${cfg.bg}; border-bottom: 3px solid ${cfg.color}` },
+      h('span', { class: 'kanban-col-title' }, cfg.title),
+      h('span', { class: 'kanban-col-count', style: `color:${cfg.color}` }, cols[cfg.key].length)
+    ),
+    h('div', { class: 'kanban-col-body' },
+      cols[cfg.key].length === 0
+        ? h('div', { class: 'kanban-empty' }, 'Nenhuma tarefa')
+        : cols[cfg.key].map(card)
+    )
+  );
+
+  return h('div', { class: 'kanban-page' },
+    h('div', { class: 'page-header' },
+      h('h1', null, '🎯 Kanban de Tarefas'),
+      h('p', { class: 'page-subtitle' }, 'Arraste os cards entre as colunas para reagendar')
+    ),
+    h('div', { class: 'kanban-board' },
+      KANBAN_COLUMNS.map(column)
+    )
+  );
+}
+
+
+// ============================================================================
+// MONITORING PAGE — Datajud + DJE
+// ============================================================================
+let _monitorPollingTimer = null;
+
+async function MonitoringPage() {
+  if (!S.data.monitoring) {
+    S.data.monitoring = { items: [], settings: {}, log: [] };
+  }
+  // Carregar dados
+  try {
+    const status = await API.req('GET', '/api/monitoring/status');
+    const log = await API.req('GET', '/api/monitoring/log?limit=50');
+    S.data.monitoring.items = status.items || [];
+    S.data.monitoring.log = log.items || [];
+  } catch (e) {
+    // ignora
+  }
+
+  const items = S.data.monitoring.items || [];
+  const log = S.data.monitoring.log || [];
+
+  const statusBadge = (it) => {
+    if (it.status !== 'active') return h('span', { class: 'mon-badge mon-badge-paused' }, '⏸ Pausado');
+    if ((it.error_count || 0) > 0) return h('span', { class: 'mon-badge mon-badge-warn' }, '⚠ Com erro');
+    return h('span', { class: 'mon-badge mon-badge-ok' }, '● Ativo');
+  };
+
+  const row = (it) => h('div', { class: 'mon-row' },
+    h('div', { class: 'mon-row-main' },
+      h('div', { class: 'mon-row-title' }, it.case_title || '(caso removido)'),
+      h('div', { class: 'mon-row-meta' },
+        h('span', null, it.cnj || 'sem CNJ'),
+        it.tribunal ? h('span', { class: 'mon-trib' }, it.tribunal) : null,
+        h('span', null, '⏱ a cada ' + (it.interval_minutes || 60) + ' min'),
+        it.last_check_at ? h('span', null, '✓ checagem: ' + fmtDateTime(it.last_check_at)) : null,
+      ),
+      it.last_movement_title ? h('div', { class: 'mon-row-mov' },
+        '🔔 Último: ' + it.last_movement_title + (it.last_movement_at ? ' (' + it.last_movement_at + ')' : '')
+      ) : null,
+      it.last_error ? h('div', { class: 'mon-row-err' }, '⚠ ' + it.last_error) : null,
+    ),
+    h('div', { class: 'mon-row-side' },
+      statusBadge(it),
+      h('button', { class: 'btn-mini', onclick: async () => {
+        try {
+          toast('Sincronizando...', 'info');
+          const r = await API.req('POST', '/api/cases/' + it.case_id + '/monitor/run', {});
+          const dj = r.datajud && r.datajud.ok ? 'Datajud OK (' + (r.datajud.inserted || 0) + ' novos)' : 'Datajud falhou';
+          const dje = r.dje && r.dje.ok ? 'DJe OK (' + (r.dje.inserted || 0) + ' novos)' : 'DJe: 0';
+          toast(dj + ' | ' + dje, r.inserted > 0 ? 'ok' : 'info');
+          await loadAll();
+          render();
+        } catch (e) {
+          toast('Erro: ' + e.message, 'err');
+        }
+      } }, '🔄 Sincronizar'),
+      h('button', { class: 'btn-mini', onclick: async () => {
+        try {
+          const newStatus = it.status === 'active' ? 'paused' : 'active';
+          await API.req('POST', '/api/cases/' + it.case_id + '/monitor', { status: newStatus });
+          toast(newStatus === 'active' ? 'Monitoramento ativado' : 'Monitoramento pausado', 'ok');
+          await loadAll();
+          render();
+        } catch (e) {
+          toast('Erro: ' + e.message, 'err');
+        }
+      } }, it.status === 'active' ? '⏸ Pausar' : '▶ Ativar')
+    )
+  );
+
+  return h('div', { class: 'mon-page' },
+    h('div', { class: 'page-header' },
+      h('h1', null, '🔔 Monitoramento de Processos'),
+      h('p', { class: 'page-subtitle' }, 'Datajud (CNJ, gratuito) + DJe dos seus tribunais'),
+      h('div', { class: 'mon-header-actions' },
+        h('button', { class: 'btn-secondary', onclick: () => openMonitoringSettings() }, '⚙ Configurações'),
+        h('button', { class: 'btn-secondary', onclick: async () => {
+          await loadAll(); render(); toast('Atualizado', 'ok');
+        } }, '🔄 Atualizar')
+      )
+    ),
+
+    h('div', { class: 'mon-info' },
+      h('div', null, '💡 Vá até a página de um caso, na aba "Movimentações", e clique em "🔔 Monitorar" para ligar o monitoramento.'),
+      h('div', { class: 'mon-info-cases' },
+        h('strong', null, 'Casos disponíveis:'),
+        (S.data.cases || []).length,
+        ' · ',
+        h('strong', null, 'Monitorados:'),
+        items.filter(i => i.status === 'active').length,
+        ' · ',
+        h('strong', null, 'Pausados:'),
+        items.filter(i => i.status === 'paused').length
+      )
+    ),
+
+    items.length === 0
+      ? h('div', { class: 'mon-empty' },
+          h('div', null, '📭 Nenhum caso está sendo monitorado ainda.'),
+          h('div', { class: 'mon-empty-sub' }, 'Abra um caso e ative o monitoramento na aba de movimentações.')
+        )
+      : h('div', { class: 'mon-list' }, items.map(row)),
+
+    h('div', { class: 'mon-log-section' },
+      h('h2', null, '📜 Últimas checagens'),
+      log.length === 0
+        ? h('div', { class: 'mon-empty' }, 'Nenhuma checagem registrada.')
+        : h('div', { class: 'mon-log' },
+            log.map(l => h('div', { class: 'mon-log-row ' + (l.ok ? 'ok' : 'err') },
+              h('span', { class: 'mon-log-time' }, fmtDateTime(l.checked_at)),
+              h('span', { class: 'mon-log-src' }, l.source),
+              h('span', { class: 'mon-log-case' }, l.case_title || '—'),
+              h('span', { class: 'mon-log-msg' }, l.message || (l.ok ? 'OK' : 'falhou')),
+              l.movements_found > 0 ? h('span', { class: 'mon-log-new' }, '+' + l.movements_found + ' novos') : null
+            ))
+          )
+    )
+  );
+}
+
+function openMonitoringSettings() {
+  const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'modal-card modal-settings' },
+      h('div', { class: 'modal-header' },
+        h('h2', null, '⚙ Configurações de Monitoramento'),
+        h('button', { class: 'modal-close', onclick: () => close() }, '×')
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'form-row' },
+          h('label', null, 'API Key do Datajud (CNJ)'),
+          h('input', { type: 'password', id: 'mon-api-key', placeholder: 'APIKeyPublicaCNJ (deixe vazio para usar chave publica padrao)' })
+        ),
+        h('div', { class: 'form-row' },
+          h('label', null, 'Intervalo padrão (minutos)'),
+          h('input', { type: 'number', id: 'mon-interval', min: '5', max: '1440', value: '60' })
+        ),
+        h('div', { class: 'form-row-inline' },
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-dje' }), ' Habilitar DJe (intimações)'),
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-datajud' }), ' Habilitar Datajud (andamentos)'),
+        ),
+        h('div', { class: 'form-row-inline' },
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-desktop' }), ' Notificação nativa do navegador'),
+          h('label', null, h('input', { type: 'checkbox', id: 'mon-email' }), ' Notificar por e-mail'),
+        ),
+        h('div', { class: 'form-row', id: 'mon-email-row', style: 'display:none' },
+          h('label', null, 'Endereço de e-mail'),
+          h('input', { type: 'email', id: 'mon-email-addr', placeholder: 'advogado@escritorio.com.br' })
+        ),
+        h('div', { class: 'modal-info' },
+          h('strong', null, '💡 Sobre o Datajud:'),
+          ' O Datajud é a API pública gratuita do Conselho Nacional de Justiça. ',
+          'A chave padrão "APIKeyPublicaCNJ" funciona para testes com rate-limit menor. ',
+          'Solicite sua chave gratuita em datajud.cnj.jus.br para uso em produção.'
+        )
+      ),
+      h('div', { class: 'modal-footer' },
+        h('button', { class: 'btn-secondary', onclick: () => close() }, 'Cancelar'),
+        h('button', { class: 'btn-primary', onclick: async () => { await saveMonSettings(); } }, 'Salvar')
+      )
+    )
+  );
+  function close() { overlay.remove(); }
+  overlay.id = 'modal-mon-settings';
+  document.body.appendChild(overlay);
+
+  // carregar valores atuais
+  API.req('GET', '/api/monitoring/settings').then(s => {
+    if (s['monitor.api_key_masked']) document.getElementById('mon-api-key').placeholder = 'Atual: ' + s['monitor.api_key_masked'];
+    document.getElementById('mon-interval').value = s['monitor.default_interval_minutes'] || '60';
+    document.getElementById('mon-dje').checked = s['monitor.dje_enabled'] === '1';
+    document.getElementById('mon-datajud').checked = s['monitor.datajud_enabled'] === '1';
+    document.getElementById('mon-desktop').checked = s['monitor.notify_desktop'] === '1';
+    document.getElementById('mon-email').checked = s['monitor.notify_email'] === '1';
+    document.getElementById('mon-email-addr').value = s['monitor.notify_email_address'] || '';
+    document.getElementById('mon-email-row').style.display = s['monitor.notify_email'] === '1' ? 'block' : 'none';
+  });
+
+  // toggle do campo de e-mail
+  setTimeout(() => {
+    const cb = document.getElementById('mon-email');
+    if (cb) cb.addEventListener('change', () => {
+      document.getElementById('mon-email-row').style.display = cb.checked ? 'block' : 'none';
+    });
+  }, 50);
+}
+
+async function saveMonSettings() {
+  const body = {
+    api_key: document.getElementById('mon-api-key').value || 'APIKeyPublicaCNJ',
+    default_interval_minutes: parseInt(document.getElementById('mon-interval').value) || 60,
+    dje_enabled: document.getElementById('mon-dje').checked,
+    datajud_enabled: document.getElementById('mon-datajud').checked,
+    notify_desktop: document.getElementById('mon-desktop').checked,
+    notify_email: document.getElementById('mon-email').checked,
+    notify_email_address: document.getElementById('mon-email-addr').value,
+  };
+  try {
+    await API.req('POST', '/api/monitoring/settings', body);
+    toast('Configurações salvas', 'ok');
+    document.getElementById('modal-mon-settings').remove();
+  } catch (e) {
+    toast('Erro ao salvar: ' + e.message, 'err');
+  }
+}
+
+
+// ============================================================================
+// NOTIFICAÇÃO NATIVA (KANBAN/MONITORAMENTO)
+// ============================================================================
+function _notifyBrowser(title, body) {
+  if (!S.settings || S.settings['monitor.notify_desktop'] !== '1') return;
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body: body, icon: '/favicon.ico' });
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') new Notification(title, { body: body });
+    });
+  }
+}
+
+function _checkForNewMovements(prev, current) {
+  // Compara contagem de case_updates entre cargas. Se cresceu, dispara notif.
+  if (!prev) return;
+  const prevCount = (prev.updates_total || 0);
+  const curCount = (current.updates_total || 0);
+  if (curCount > prevCount) {
+    const diff = curCount - prevCount;
+    _notifyBrowser('🔔 LexFlow: ' + diff + ' andamento(s) novo(s)',
+                   'Acesse o sistema para ver as últimas movimentações dos processos.');
+  }
+}
+

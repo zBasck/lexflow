@@ -833,3 +833,195 @@ body[data-theme="dark"] .result-title { color: var(--ink); }
   from { opacity: 0; transform: translateY(-10px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+
+
+/* ============================================================================ */
+/* KANBAN                                                                       */
+/* ============================================================================ */
+.kanban-page { padding: 0; }
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  padding: 16px 0;
+}
+.kanban-col {
+  background: #f8fafc;
+  border-radius: 12px;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.kanban-col-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+}
+.kanban-col-title { font-size: 14px; }
+.kanban-col-count {
+  font-size: 18px;
+  font-weight: 700;
+  background: white;
+  padding: 2px 10px;
+  border-radius: 10px;
+  min-width: 28px;
+  text-align: center;
+}
+.kanban-col-body {
+  padding: 12px;
+  flex: 1;
+  overflow-y: auto;
+  max-height: 70vh;
+}
+.kanban-empty {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 30px 10px;
+  font-style: italic;
+}
+.kanban-card {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  cursor: grab;
+  position: relative;
+  border-left: 4px solid #cbd5e1;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.kanban-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+.kanban-card-pri {
+  position: absolute; top: 0; left: 0; width: 4px; height: 100%;
+  background: #94a3b8; border-radius: 8px 0 0 8px;
+}
+.kanban-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+.kanban-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.kanban-due, .kanban-case { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+.kanban-resp { font-size: 11px; color: #475569; margin-top: 4px; }
+
+/* ============================================================================ */
+/* MONITORING                                                                   */
+/* ============================================================================ */
+.mon-page { padding: 0; }
+.mon-header-actions { display: flex; gap: 8px; }
+.mon-info {
+  background: #eff6ff;
+  border-left: 4px solid #3b82f6;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1e40af;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.mon-info-cases { margin-top: 6px; font-size: 12px; }
+.mon-list { display: flex; flex-direction: column; gap: 8px; }
+.mon-row {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+.mon-row-main { flex: 1; min-width: 0; }
+.mon-row-title { font-weight: 600; color: #0f172a; margin-bottom: 4px; }
+.mon-row-meta {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  font-size: 12px; color: #64748b;
+  margin-bottom: 4px;
+}
+.mon-trib {
+  background: #dbeafe; color: #1e40af;
+  padding: 1px 8px; border-radius: 4px; font-weight: 600;
+}
+.mon-row-mov {
+  font-size: 12px; color: #0369a1; background: #f0f9ff;
+  padding: 4px 8px; border-radius: 4px; margin-top: 6px;
+}
+.mon-row-err { font-size: 12px; color: #dc2626; margin-top: 4px; }
+.mon-row-side {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+}
+.mon-badge {
+  padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
+}
+.mon-badge-ok { background: #d1fae5; color: #065f46; }
+.mon-badge-paused { background: #e2e8f0; color: #475569; }
+.mon-badge-warn { background: #fef3c7; color: #92400e; }
+.btn-mini {
+  padding: 4px 10px; font-size: 11px; border-radius: 4px;
+  background: #f1f5f9; color: #1e293b; border: 1px solid #cbd5e1; cursor: pointer;
+  white-space: nowrap;
+}
+.btn-mini:hover { background: #e2e8f0; }
+.mon-empty {
+  text-align: center; padding: 40px 20px; color: #64748b;
+  background: #f8fafc; border-radius: 8px; border: 2px dashed #cbd5e1;
+}
+.mon-empty-sub { font-size: 12px; color: #94a3b8; margin-top: 8px; }
+.mon-log-section { margin-top: 30px; }
+.mon-log-section h2 { font-size: 16px; color: #0f172a; margin-bottom: 10px; }
+.mon-log { display: flex; flex-direction: column; gap: 4px; }
+.mon-log-row {
+  display: grid;
+  grid-template-columns: 140px 80px 1fr 1fr auto;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: white;
+  border: 1px solid #f1f5f9;
+  align-items: center;
+}
+.mon-log-row.err { background: #fef2f2; border-color: #fecaca; }
+.mon-log-row.ok { background: #f0fdf4; }
+.mon-log-time { color: #64748b; font-family: monospace; }
+.mon-log-src { font-weight: 600; color: #1e293b; }
+.mon-log-case { color: #475569; overflow: hidden; text-overflow: ellipsis; }
+.mon-log-msg { color: #64748b; overflow: hidden; text-overflow: ellipsis; }
+.mon-log-new { background: #16a34a; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+
+/* Modal settings */
+.modal-settings { max-width: 600px; }
+.modal-settings .form-row { margin-bottom: 14px; }
+.modal-settings .form-row label { display: block; font-size: 13px; color: #1e293b; font-weight: 500; margin-bottom: 4px; }
+.modal-settings .form-row input[type=text],
+.modal-settings .form-row input[type=password],
+.modal-settings .form-row input[type=number],
+.modal-settings .form-row input[type=email] {
+  width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;
+}
+.modal-settings .form-row-inline { display: flex; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.modal-settings .form-row-inline label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.modal-info {
+  background: #f0f9ff; border: 1px solid #bae6fd; padding: 10px 12px;
+  border-radius: 6px; font-size: 12px; color: #0c4a6e; line-height: 1.5; margin-top: 10px;
+}
+
+@media (max-width: 1024px) {
+  .kanban-board { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .kanban-board { grid-template-columns: 1fr; }
+  .mon-log-row { grid-template-columns: 1fr; gap: 4px; }
+}

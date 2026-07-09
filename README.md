@@ -198,3 +198,45 @@ MIT — veja [LICENSE](LICENSE).
 ---
 
 (c) 2026 LexFlow. Feito para o advogado brasileiro.
+
+---
+
+## Novidades da versão 2.1 — Monitoramento + Kanban
+
+### Monitoramento automático de processos (Datajud + DJe)
+
+Agora o LexFlow consulta **de graça** as APIs públicas dos tribunais para buscar andamentos e intimações dos seus processos, sem precisar de assinatura de serviço pago.
+
+**Fontes integradas (todas gratuitas):**
+- **Datajud (CNJ)**: API pública oficial que cobre 100% dos tribunais brasileiros (TJSP, TJRJ, TJRS, TJAM, TRTs, TRFs, STJ, STF).
+- **DJe (Diário de Justiça Eletrônico)**: scrapers nativos para os 6 tribunais que você usa:
+  - **TJSP** (Diário da Justiça de São Paulo)
+  - **TJRJ** — Eproc (1ª instância) e PJe (2ª instância)
+  - **TJRS** (Diário da Justiça do Rio Grande do Sul)
+  - **TJAM** (Diário da Justiça do Amazonas)
+  - **TRT1** (PJe Trabalhista)
+
+**Como funciona:**
+1. Abra um caso na página de detalhe, aba "Linha do tempo".
+2. Clique em **🔔 Monitorar...** para ligar (escolha o intervalo: 5 min a 24 h).
+3. O LexFlow checa automaticamente o Datajud e o DJe desse caso.
+4. Quando sair movimento novo, ele aparece como andamento no caso **e dispara notificação nativa do navegador** (popup do sistema).
+5. Acesse a página **🔔 Monitoramento** na sidebar para ver status, sincronizar manualmente e ver o histórico de checagens.
+
+**Privacidade e segurança:**
+- Sua API key do Datajud fica **criptografada com Fernet** (AES + HMAC) no arquivo `.lexflow.key` na raiz do projeto.
+- Chave padrão "APIKeyPublicaCNJ" funciona para testes; para produção, solicite sua chave gratuita em **datajud.cnj.jus.br**.
+- Backoff exponencial (1m, 5m, 30m, 2h) e **circuit breaker** (3 falhas → pausa por 10 min) para não derrubar o sistema se a API oscilar.
+
+### Kanban de tarefas por urgência
+
+Nova página **🎯 Kanban** com 4 colunas: **Atrasado · Hoje · Esta semana · Mais tarde**.
+- Cards arrastáveis — arraste entre colunas para reagendar (a data é atualizada automaticamente).
+- Cor da borda esquerda = prioridade (alta = vermelho, média = laranja, baixa = cinza).
+- Clique no card para abrir a edição completa da tarefa.
+
+### Outras melhorias
+- Worker thread em background (não bloqueia a UI).
+- Endpoint `POST /api/cases/{id}/monitor/run` para sincronização imediata.
+- Endpoint `GET /api/monitoring/log` para auditoria das últimas 500 checagens.
+- Permissões: apenas sócios podem alterar configurações de monitoramento.

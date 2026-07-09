@@ -16,6 +16,17 @@ import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+try:
+    import monitor as _monitor
+    HAS_MONITOR = True
+except Exception as _e:
+    _monitor = None
+    HAS_MONITOR = False
+    sys.stderr.write(f"[server] monitor module not loaded: {_e}\n")
+
+# Instância global do worker (iniciada no main)
+MONITOR_WORKER = {"instance": None}
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "lexflow.db")
@@ -273,6 +284,36 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         )""",
+        """CREATE TABLE IF NOT EXISTS monitoring (
+            case_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'paused',
+            interval_minutes INTEGER NOT NULL DEFAULT 60,
+            last_check_at TEXT,
+            last_movement_at TEXT,
+            last_movement_title TEXT,
+            last_movement_source TEXT,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            tribunal TEXT,
+            court_segment TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE CASCADE
+        )""",
+        """CREATE TABLE IF NOT EXISTS monitoring_log (
+            id TEXT PRIMARY KEY,
+            case_id TEXT,
+            checked_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 1,
+            message TEXT,
+            movements_found INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE CASCADE
+        )""",
+        """CREATE TABLE IF NOT EXISTS monitoring_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )""",
         """CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,
             user_id TEXT,
@@ -302,9 +343,23 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cases_deadline ON cases(next_deadline)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_monitoring_status ON monitoring(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_monitoring_log_case ON monitoring_log(case_id, checked_at DESC)")
 
     # Migrar role do usuario Patrick/seed para "socio" (caixa baixa) para checagem de permissão
     cur.execute("UPDATE users SET role='socio' WHERE LOWER(REPLACE(REPLACE(REPLACE(role, 'ç','c'), 'ã','a'), 'ó','o')) IN ('socio', 'socia', 'sócio', 'sócia', 'admin', 'owner', 'partner')")
+
+    # Defaults de monitoramento (idempotente)
+    for k, v in {
+        "monitor.api_key": "APIKeyPublicaCNJ",  # chave publica de demonstracao do CNJ
+        "monitor.default_interval_minutes": "60",
+        "monitor.notify_desktop": "1",
+        "monitor.notify_email": "0",
+        "monitor.notify_email_address": "",
+        "monitor.dje_enabled": "1",
+        "monitor.datajud_enabled": "1",
+    }.items():
+        cur.execute("INSERT OR IGNORE INTO monitoring_settings(key, value) VALUES (?, ?)", (k, v))
 
     cur.execute("SELECT COUNT(*) AS c FROM users")
     if cur.fetchone()["c"] == 0:
@@ -564,6 +619,20 @@ def dispatch(handler, method, path):
         fn = ROUTES.get(("DELETE", "/api/trash/{table}/{id}"))
         if fn:
             return fn(handler, m.group(1), m.group(2))
+
+    # Pattern para /api/cases/{id}/monitor/run (POST) e /api/cases/{id}/monitor (POST)
+    m = re.match(r"^/api/cases/([\w\-]+)/monitor/run$", path)
+    if m and method == "POST":
+        fn = ROUTES.get(("POST", "/api/cases/{id}/monitor/run"))
+        if fn:
+            return fn(handler, m.group(1), None)
+
+    m = re.match(r"^/api/cases/([\w\-]+)/monitor$", path)
+    if m and method == "POST":
+        fn = ROUTES.get(("POST", "/api/cases/{id}/monitor"))
+        if fn:
+            body = read_body(handler)
+            return fn(handler, m.group(1), body)
 
     not_found(handler)
 
@@ -1461,6 +1530,279 @@ def audit_get_detail(handler, aid):
                 pass
     return json_response(handler, 200, out)
 
+
+# ----------------------------- MONITORING -----------------------------
+
+def _mon_settings_get(key, default=None):
+    conn = db()
+    try:
+        r = conn.execute("SELECT value FROM monitoring_settings WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else default
+    finally:
+        conn.close()
+
+
+def _mon_settings_set(key, value):
+    conn = db()
+    try:
+        conn.execute("INSERT INTO monitoring_settings(key, value) VALUES(?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mon_get_api_key():
+    """Retorna a API key em plaintext. Busca primeiro no settings (criptografada)
+    e cai pra APIKeyPublicaCNJ se nada tiver sido configurado."""
+    enc = _mon_settings_get("monitor.api_key", "")
+    if not enc or enc == "APIKeyPublicaCNJ":
+        return enc or "APIKeyPublicaCNJ"
+    if HAS_MONITOR:
+        return _monitor.decrypt_value(enc)
+    return enc
+
+
+def _mon_upsert_monitoring(case_id, status="active", interval_minutes=None, tribunal=None):
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    conn = db()
+    try:
+        existing = conn.execute("SELECT case_id FROM monitoring WHERE case_id=?", (case_id,)).fetchone()
+        if existing:
+            sets = ["status=?", "updated_at=?"]
+            vals = [status, now]
+            if interval_minutes is not None:
+                sets.append("interval_minutes=?")
+                vals.append(interval_minutes)
+            if tribunal is not None:
+                sets.append("tribunal=?")
+                vals.append(tribunal)
+            vals.append(case_id)
+            conn.execute(f"UPDATE monitoring SET {', '.join(sets)} WHERE case_id=?", vals)
+        else:
+            conn.execute(
+                "INSERT INTO monitoring(case_id, status, interval_minutes, tribunal, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (case_id, status, interval_minutes or 60, tribunal, now, now)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def monitor_case_toggle(handler, case_id, body):
+    """POST /api/cases/{id}/monitor — body: {status: 'active'|'paused', interval_minutes: int}"""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    status = (body or {}).get("status", "active")
+    if status not in ("active", "paused"):
+        return json_response(handler, 400, {"error": "status invalido"})
+    try:
+        interval = int((body or {}).get("interval_minutes", 60))
+    except Exception:
+        interval = 60
+    if interval < 5:
+        interval = 5
+    if interval > 1440:
+        interval = 1440
+    tribunal = (body or {}).get("tribunal") or None
+    # Buscar caso
+    conn = db()
+    try:
+        c = conn.execute("SELECT id, code, court, title FROM cases WHERE id=? AND (deleted_at IS NULL OR deleted_at='')", (case_id,)).fetchone()
+        if not c:
+            return json_response(handler, 404, {"error": "caso nao encontrado"})
+        if not tribunal and HAS_MONITOR:
+            tribunal = _monitor.detect_tribunal(dict(c))
+        _mon_upsert_monitoring(case_id, status=status, interval_minutes=interval, tribunal=tribunal)
+    finally:
+        conn.close()
+    audit(user["id"], "update", "monitoring", case_id, None,
+          {"status": status, "interval_minutes": interval, "tribunal": tribunal})
+    return json_response(handler, 200, {"ok": True, "status": status, "interval_minutes": interval, "tribunal": tribunal})
+
+
+def monitor_run_now(handler, case_id, body=None):
+    """POST /api/cases/{id}/monitor/run — checagem imediata."""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not has_permission(user, "create"):
+        return json_response(handler, 403, {"error": "forbidden"})
+    if not HAS_MONITOR or _monitor is None:
+        return json_response(handler, 503, {"error": "monitor indisponivel"})
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT m.*, c.code, c.court, c.title FROM monitoring m JOIN cases c ON c.id=m.case_id "
+            "WHERE m.case_id=? AND (c.deleted_at IS NULL OR c.deleted_at='')", (case_id,)
+        ).fetchone()
+        if not row:
+            return json_response(handler, 404, {"error": "monitoramento nao configurado"})
+        case = dict(row)
+        tribunal = case.get("tribunal") or _monitor.detect_tribunal(case)
+        cnj = case.get("code") or ""
+        if not cnj:
+            return json_response(handler, 400, {"error": "caso sem numero CNJ"})
+        api_key = _mon_get_api_key()
+        result = {"datajud": None, "dje": None, "inserted": 0}
+        # Datajud
+        try:
+            resp = _monitor.datajud_lookup(cnj, tribunal, api_key)
+            movs = _monitor.extract_movements(resp)
+            worker = MONITOR_WORKER.get("instance")
+            if worker:
+                inserted = worker._insert_movements(case_id, movs, "datajud")
+            else:
+                inserted = 0
+            result["datajud"] = {"ok": True, "count": len(movs), "inserted": inserted}
+            result["inserted"] += inserted
+        except Exception as e:
+            result["datajud"] = {"ok": False, "error": str(e)[:200]}
+        # DJE
+        try:
+            scraper_key = "TJRJ_EPROC" if tribunal == "TJRJ" else tribunal
+            sc = _monitor.SCRAPERS.get(scraper_key) or _monitor.SCRAPERS.get(tribunal)
+            if sc:
+                pubs = sc({"code": cnj, "court": case.get("court", "")})
+                worker = MONITOR_WORKER.get("instance")
+                if worker:
+                    ins = worker._insert_dedupe_pubs(case_id, pubs)
+                else:
+                    ins = 0
+                result["dje"] = {"ok": True, "count": len(pubs), "inserted": ins}
+                result["inserted"] += ins
+        except Exception as e:
+            result["dje"] = {"ok": False, "error": str(e)[:200]}
+        # update last_check_at
+        _mon_upsert_monitoring(case_id, status=case.get("status") or "active",
+                               interval_minutes=case.get("interval_minutes") or 60, tribunal=tribunal)
+        worker = MONITOR_WORKER.get("instance")
+        if worker:
+            worker._update_case_state(case_id,
+                last_check_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                tribunal=tribunal, error_count=0, last_error=None)
+    finally:
+        conn.close()
+    return json_response(handler, 200, result)
+
+
+def monitor_status(handler):
+    """GET /api/monitoring/status — resumo por caso."""
+    user = require_auth(handler)
+    if not user:
+        return
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT m.case_id, m.status, m.interval_minutes, m.last_check_at,
+                   m.last_movement_at, m.last_movement_title, m.last_movement_source,
+                   m.error_count, m.last_error, m.tribunal,
+                   c.code AS cnj, c.title AS case_title, c.court,
+                   (SELECT COUNT(*) FROM monitoring_log ml WHERE ml.case_id=m.case_id) AS log_count
+            FROM monitoring m
+            JOIN cases c ON c.id = m.case_id
+            WHERE (c.deleted_at IS NULL OR c.deleted_at='')
+            ORDER BY c.title
+        """).fetchall()
+        out = [dict(r) for r in rows]
+    finally:
+        conn.close()
+    return json_response(handler, 200, {"items": out})
+
+
+def monitor_settings_get(handler):
+    """GET /api/monitoring/settings"""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    keys = [
+        "monitor.api_key", "monitor.default_interval_minutes", "monitor.notify_desktop",
+        "monitor.notify_email", "monitor.notify_email_address",
+        "monitor.dje_enabled", "monitor.datajud_enabled",
+    ]
+    out = {k: _mon_settings_get(k, "") for k in keys}
+    if "monitor.api_key" in out and out["monitor.api_key"]:
+        out["monitor.api_key_masked"] = "***" + out["monitor.api_key"][-4:]
+    else:
+        out["monitor.api_key_masked"] = "(padrao CNJ)"
+    return json_response(handler, 200, out)
+
+
+def monitor_settings_set(handler, body):
+    """POST /api/monitoring/settings"""
+    user = require_auth(handler)
+    if not user:
+        return
+    if not has_permission(user, "create"):
+        return json_response(handler, 403, {"error": "forbidden"})
+    body = body or {}
+    if "api_key" in body and body["api_key"]:
+        plain = str(body["api_key"]).strip()
+        if HAS_MONITOR and plain and plain != "APIKeyPublicaCNJ":
+            enc = _monitor.encrypt_value(plain)
+            _mon_settings_set("monitor.api_key", enc)
+        else:
+            _mon_settings_set("monitor.api_key", plain)
+    if "default_interval_minutes" in body:
+        try:
+            v = max(5, min(1440, int(body["default_interval_minutes"])))
+            _mon_settings_set("monitor.default_interval_minutes", str(v))
+        except Exception:
+            pass
+    for k in ("notify_desktop", "notify_email", "dje_enabled", "datajud_enabled"):
+        if k in body:
+            _mon_settings_set(f"monitor.{k}", "1" if body[k] else "0")
+    if "notify_email_address" in body:
+        _mon_settings_set("monitor.notify_email_address", str(body["notify_email_address"] or ""))
+    return monitor_settings_get(handler)
+
+
+def monitor_log_list(handler):
+    """GET /api/monitoring/log — ultimas N checagens."""
+    user = require_auth(handler)
+    if not user:
+        return
+    q = parse_qs(urlparse(handler.path).query or "")
+    limit = int((q.get("limit") or [50])[0])
+    limit = max(1, min(500, limit))
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT ml.id, ml.case_id, ml.checked_at, ml.source, ml.ok, ml.message, ml.movements_found,
+                   c.title AS case_title
+            FROM monitoring_log ml
+            LEFT JOIN cases c ON c.id = ml.case_id
+            ORDER BY ml.checked_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        out = [dict(r) for r in rows]
+    finally:
+        conn.close()
+    return json_response(handler, 200, {"items": out})
+
+
+# Rotas de monitoramento (wrappers definidos ANTES)
+def monitor_case_toggle_with_id(handler, case_id, body):
+    return monitor_case_toggle(handler, case_id, body)
+
+
+def monitor_run_now_with_id(handler, case_id, body):
+    return monitor_run_now(handler, case_id, body)
+
+
+route("POST", "/api/cases/{id}/monitor",       monitor_case_toggle_with_id)
+route("POST", "/api/cases/{id}/monitor/run",   monitor_run_now_with_id)
+route("GET",  "/api/monitoring/status",        monitor_status)
+route("GET",  "/api/monitoring/settings",      monitor_settings_get)
+route("POST", "/api/monitoring/settings",      monitor_settings_set)
+route("GET",  "/api/monitoring/log",           monitor_log_list)
+
 route("GET", "/api/audit",            audit_list)
 route("GET", "/api/audit/{id}",       audit_get_detail)
 
@@ -1579,9 +1921,25 @@ class LexFlowHandler(BaseHTTPRequestHandler):
 
 def main():
     print("=" * 60)
-    print("  LexFlow - Sistema de Gestao Juridica")
+    print("  LexFlow - Sistema de Gestao Juridica v2.1")
     print("=" * 60)
     init_db()
+    # Inicia o worker de monitoramento em background
+    if HAS_MONITOR and _monitor is not None:
+        try:
+            _interval = int(_mon_settings_get("monitor.default_interval_minutes", "60") or "60")
+            _loop_seconds = max(15, min(_interval * 60, 86400) // 10)  # loop rapido (default 36s), checagem real respeita intervalo individual
+            MONITOR_WORKER["instance"] = _monitor.MonitoringWorker(
+                db_path=DB_PATH, get_api_key_fn=_mon_get_api_key,
+                interval_seconds=_loop_seconds,
+            )
+            MONITOR_WORKER["instance"].start()
+            print(f"  Monitor Datajud/DJE: ON (loop {_loop_seconds}s, default interval {_interval} min)")
+        except Exception as _e:
+            sys.stderr.write(f"[server] nao foi possivel iniciar monitor: {_e}\n")
+    else:
+        print("  Monitor Datajud/DJE: OFF (modulo indisponivel)")
+
     print(f"  Banco de dados: {DB_PATH}")
     print(f"  Frontend:       {FRONTEND_DIR}")
     print(f"  Servidor:       http://localhost:{PORT}")
