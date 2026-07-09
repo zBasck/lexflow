@@ -647,17 +647,21 @@ def dispatch(handler, method, path):
         resource, rid, action = m.group(1), m.group(2), m.group(3)
         fn = ROUTES.get((method, f"/api/{resource}/{{id}}/{action}"))
         if fn:
-            # Aridade adaptativa: alguns handlers (ex.: case_updates_create) soh aceitam (handler, case_id)
-            # IMPORTANTE: o body do rfile soh pode ser lido UMA vez. Se o handler esperar 2 args
+            # Aridade adaptativa: alguns handlers (ex.: case_updates_create) so aceitam (handler, rid)
+            # IMPORTANTE: o body do rfile so pode ser lido UMA vez. Se o handler esperar 2 args
             # (handler, rid), ele le o body internamente. Se esperar 3, lemos aqui e passamos.
-            nparams = len(inspect.signature(fn).parameters)
+            try:
+                nparams = len(inspect.signature(fn).parameters)
+            except Exception:
+                nparams = 2
             if nparams >= 3:
                 body = read_body(handler) if method in ("POST", "PUT", "PATCH") else None
                 return fn(handler, rid, body)
-            else:
-                # handler com 2 args (handler, rid) ou 1 arg (handler)
+            elif nparams == 2:
                 # NAO le o body aqui - deixa o handler fazer isso
-                return fn(handler, rid) if nparams >= 2 else fn(handler)
+                return fn(handler, rid)
+            else:
+                return fn(handler)
 
     not_found(handler)
 
@@ -1755,7 +1759,14 @@ def monitor_status(handler):
             if oab:
                 import re as _re
                 m_num = _re.search(r"(\d{4,6})", oab)
-                m_uf = _re.search(r"/([A-Z]{2})", oab) or _re.search(r"^([A-Z]{2})", oab)
+                # Aceita: "OAB/RJ 244.384", "OAB RJ 244384", "RJ 244384",
+                #         "244384/RJ", "244384-RJ", "OAB244384RJ", etc.
+                m_uf = (
+                    _re.search(r"/([A-Z]{2})\b", oab)        # /RJ
+                    or _re.search(r"\b([A-Z]{2})\s+\d", oab)  # RJ 244
+                    or _re.search(r"\b([A-Z]{2})$", oab)      # termina com RJ
+                    or _re.search(r"^([A-Z]{2})\b", oab)      # comeca com RJ
+                )
                 d["responsible_oab_num"] = m_num.group(1) if m_num else None
                 d["responsible_oab_uf"] = m_uf.group(1) if m_uf else None
             out.append(d)
@@ -1825,9 +1836,11 @@ def monitor_log_list(handler):
     try:
         rows = conn.execute("""
             SELECT ml.id, ml.case_id, ml.checked_at, ml.source, ml.ok, ml.message, ml.movements_found,
-                   c.title AS case_title
+                   c.title AS case_title,
+                   u.oab AS responsible_oab
             FROM monitoring_log ml
             LEFT JOIN cases c ON c.id = ml.case_id
+            LEFT JOIN users u ON u.id = c.responsible_id
             ORDER BY ml.checked_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
@@ -1838,7 +1851,14 @@ def monitor_log_list(handler):
             if oab:
                 import re as _re
                 m_num = _re.search(r"(\d{4,6})", oab)
-                m_uf = _re.search(r"/([A-Z]{2})", oab) or _re.search(r"^([A-Z]{2})", oab)
+                # Aceita: "OAB/RJ 244.384", "OAB RJ 244384", "RJ 244384",
+                #         "244384/RJ", "244384-RJ", "OAB244384RJ", etc.
+                m_uf = (
+                    _re.search(r"/([A-Z]{2})\b", oab)        # /RJ
+                    or _re.search(r"\b([A-Z]{2})\s+\d", oab)  # RJ 244
+                    or _re.search(r"\b([A-Z]{2})$", oab)      # termina com RJ
+                    or _re.search(r"^([A-Z]{2})\b", oab)      # comeca com RJ
+                )
                 d["responsible_oab_num"] = m_num.group(1) if m_num else None
                 d["responsible_oab_uf"] = m_uf.group(1) if m_uf else None
             out.append(d)

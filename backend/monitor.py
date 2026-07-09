@@ -13,6 +13,7 @@ Aliases: tjsp, tjrj, tjrs, tjam, trt1, trf1..trf6, tst, stj, stf
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -260,7 +261,6 @@ def scraper_tjsp(case: dict) -> list:
 
 def _parse_tjsp_html(html: str, cnj: str) -> list:
     """Parser best-effort do HTML do DJe TJSP."""
-    import re
     out = []
     # Cada publicacao tem <tr class="resultado"> ou parecida. Vamos procurar
     # padroes simples.
@@ -295,11 +295,10 @@ def scraper_tjrs(case: dict) -> list:
     req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
-    import re as _re
-    titles = _re.findall(r"<h[23][^>]*>(.+?)</h[23]>", html, flags=_re.S | _re.I)
+    titles = re.findall(r"<h[23][^>]*>(.+?)</h[23]>", html, flags=re.S | re.I)
     pubs = []
     for t in titles[:10]:
-        text = _re.sub(r"<[^>]+>", "", t or "").strip()
+        text = re.sub(r"<[^>]+>", "", t or "").strip()
         if not text or cnj_clean[:8] not in text:
             continue
         pubs.append({
@@ -340,14 +339,13 @@ def scraper_tjrj_eproc(case: dict) -> list:
     req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
-    import re as _re
-    rows = _re.findall(r"<tr[^>]*>(.+?)</tr>", html, flags=_re.S | _re.I)
+    rows = re.findall(r"<tr[^>]*>(.+?)</tr>", html, flags=re.S | re.I)
     pubs = []
     for r in rows:
-        cells = _re.findall(r"<td[^>]*>(.+?)</td>", r, flags=_re.S | _re.I)
+        cells = re.findall(r"<td[^>]*>(.+?)</td>", r, flags=re.S | re.I)
         if len(cells) < 2:
             continue
-        text_cells = [_re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+        text_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
         if not any(cnj_clean[:8] in (c or "").replace("-", "").replace(".", "") for c in text_cells):
             continue
         date = _dje_normalize_date(text_cells[0]) or datetime.date.today().isoformat()
@@ -373,13 +371,12 @@ def scraper_tjrj_pje(case: dict) -> list:
     req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
-    import re as _re
-    moves = _re.findall(r"<li[^>]*class=\"movimentacao\"[^>]*>(.+?)</li>", html, flags=_re.S | _re.I)
+    moves = re.findall(r"<li[^>]*class=\"movimentacao\"[^>]*>(.+?)</li>", html, flags=re.S | re.I)
     if not moves:
-        moves = _re.findall(r"<div[^>]*class=\"[^\"]*andamento[^\"]*\"[^>]*>(.+?)</div>", html, flags=_re.S | _re.I)
+        moves = re.findall(r"<div[^>]*class=\"[^\"]*andamento[^\"]*\"[^>]*>(.+?)</div>", html, flags=re.S | re.I)
     pubs = []
     for m in moves[:10]:
-        text = _re.sub(r"<[^>]+>", "", m).strip()
+        text = re.sub(r"<[^>]+>", "", m).strip()
         if not text:
             continue
         pubs.append({
@@ -404,11 +401,10 @@ def scraper_trt1(case: dict) -> list:
     req = urllib.request.Request(url, headers={"User-Agent": "LexFlow/2.1"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
-    import re as _re
-    moves = _re.findall(r"<div[^>]*class=\"[^\"]*movimento[^\"]*\"[^>]*>(.+?)</div>", html, flags=_re.S | _re.I)
+    moves = re.findall(r"<div[^>]*class=\"[^\"]*movimento[^\"]*\"[^>]*>(.+?)</div>", html, flags=re.S | re.I)
     pubs = []
     for m in moves[:10]:
-        text = _re.sub(r"<[^>]+>", "", m).strip()
+        text = re.sub(r"<[^>]+>", "", m).strip()
         if not text:
             continue
         pubs.append({
@@ -463,12 +459,11 @@ def oab_lookup(numero_oab: str, uf: str = "RJ", days_back: int = 7) -> list:
         req = urllib.request.Request(target, headers={"User-Agent": "LexFlow/2.1"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
-        import re as _re
-        blocks = _re.findall(r"<p[^>]*>(.+?)</p>", html, flags=_re.S | _re.I) + \
-                 _re.findall(r"<li[^>]*>(.+?)</li>", html, flags=_re.S | _re.I)
+            blocks = re.findall(r"<p[^>]*>(.+?)</p>", html, flags=re.S | re.I) + \
+                 re.findall(r"<li[^>]*>(.+?)</li>", html, flags=re.S | re.I)
         for b in blocks[:50]:
-            text = _re.sub(r"<[^>]+>", " ", b)
-            text = _re.sub(r"\s+", " ", text).strip()
+            text = re.sub(r"<[^>]+>", " ", b)
+            text = re.sub(r"\s+", " ", text).strip()
             if not text or numero_oab not in text:
                 continue
             if "OAB" not in text.upper():
