@@ -432,6 +432,38 @@ def _extract_case_info_from_text(text: str) -> dict:
     return info
 
 
+def scraper_pje_for_oab(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> dict:
+    """v3.1: busca publicacoes por OAB no Comunica PJE (SEM CNJ).
+
+    URL: https://comunica.pje.jus.br/consulta?siglaTribunal={TJ}&numeroOab={NUM}&ufOab={UF}
+    Retorna dict com: pubs (lista), url, tribunal.
+    """
+    out = {"pubs": [], "url": "", "tribunal": "", "error": None}
+    numero_oab = re.sub(r"[^0-9]", "", str(numero_oab or ""))
+    uf = (uf or "RJ").upper().strip()
+    if not numero_oab:
+        out["error"] = "OAB vazia"
+        return out
+    sigla = uf_to_tribunal(uf) or "TJRJ"
+    out["tribunal"] = sigla
+    url = (
+        f"{COMUNICA_PJE_URL}?siglaTribunal={urllib.parse.quote(sigla)}"
+        f"&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}"
+    )
+    out["url"] = url
+    try:
+        pubs = scraper_pje("", numero_oab, uf, timeout=timeout)
+    except Exception as e:
+        out["error"] = f"falha HTTP: {str(e)[:120]}"
+        return out
+    for p in pubs:
+        p["url"] = url
+        p["tribunal"] = sigla
+        p["oab"] = f"{uf} {numero_oab}".strip()
+    out["pubs"] = pubs
+    return out
+
+
 def scraper_pje_for_case(cnj: str, oab_num: str = "", oab_uf: str = "RJ", timeout: int = 30) -> dict:
     """Busca publicacoes de um processo especifico no Comunica PJE.
     Retorna dict com: pubs (lista), case_info (classe, assunto, partes, etc.).
@@ -601,14 +633,25 @@ class MonitoringWorker(threading.Thread):
             tribunal_sigla = pub.get("tribunal", "TJRJ")
             title = f"Processo {cnj} (criado por monitoramento)"
             now = datetime.datetime.now().isoformat(timespec="seconds")
-            conn.execute(
-                "INSERT INTO cases(id, code, title, court, status, area, responsible_id, client_id,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    case_id, cnj, title, tribunal_sigla, "ativo", "monitoramento",
-                    user_id, client_id, now, now,
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO cases(id, code, title, court, status, area, responsible_id, client_id,"
+                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        case_id, cnj, title, tribunal_sigla, "ativo", "monitoramento",
+                        user_id, client_id, now, now,
+                    ),
+                )
+            except Exception as _exc:
+                # UNIQUE em cases(code) - caso ja existe (race). Reutilizar.
+                if "UNIQUE" in str(_exc).upper() or "unique" in str(_exc).lower():
+                    existing = conn.execute(
+                        "SELECT id FROM cases WHERE code = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
+                        (cnj,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
+                raise
             conn.execute(
                 "INSERT INTO monitoring(case_id, status, interval_minutes, created_at, updated_at)"
                 " VALUES (?, 'active', 60, ?, ?)",
@@ -634,31 +677,46 @@ class MonitoringWorker(threading.Thread):
             conn.close()
 
     def _insert_dedupe_pubs_for_case(self, case_id: str, pubs: list) -> int:
+        """v3.1: dedup forte. Chave: (case_id, date, title, hash(desc[:120]))."""
         if not pubs:
             return 0
+        import hashlib
         conn = self._conn()
         try:
             inserted = 0
             for p in pubs:
                 title = (p.get("title") or "").strip()[:200]
+                date_iso = (p.get("date") or datetime.date.today().isoformat())[:10]
                 if not title:
                     continue
+                desc = (p.get("description") or "").strip()[:120]
+                desc_hash = hashlib.sha1(desc.encode("utf-8", errors="ignore")).hexdigest()[:16]
+                # Chave de dedup: case + date + title + hash do conteudo
                 exists = conn.execute(
-                    "SELECT 1 FROM case_updates WHERE case_id = ? AND title = ?"
-                    " AND date >= date('now', '-30 days')",
-                    (case_id, title),
+                    "SELECT 1 FROM case_updates WHERE case_id = ? AND date = ? AND title = ?"
+                    " AND substr(coalesce(description,''), 1, 120) = ? LIMIT 1",
+                    (case_id, date_iso, title, desc),
                 ).fetchone()
                 if exists:
                     continue
+                # Tambem checa por hash armazenado em description (campo [hash:xxxxx])
+                exists2 = conn.execute(
+                    "SELECT 1 FROM case_updates WHERE case_id = ? AND date = ? AND title = ?"
+                    " AND description LIKE ? LIMIT 1",
+                    (case_id, date_iso, title, f"%[hash:{desc_hash}]%"),
+                ).fetchone()
+                if exists2:
+                    continue
+                full_desc = (p.get("description") or "")[:800] + f" [fonte: Comunica PJE] [hash:{desc_hash}]"
                 conn.execute(
                     "INSERT INTO case_updates(id, case_id, date, title, description, type)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         secrets.token_hex(8),
                         case_id,
-                        (p.get("date") or datetime.date.today().isoformat())[:10],
+                        date_iso,
                         title,
-                        ((p.get("description") or "")[:800] + " [fonte: Comunica PJE]"),
+                        full_desc,
                         "publicacao",
                     ),
                 )

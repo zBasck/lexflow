@@ -2668,6 +2668,35 @@
             h('button', { class: 'btn-secondary', onclick: async () => { await loadAll(); render(); toast('Atualizado', 'ok'); } }, '🔄 Atualizar')
           )
         ),
+        h('div', { class: 'mon-pje-search' },
+          h('strong', null, '🔎 Busca por OAB padrão (Comunica PJE):'),
+          h('input', { type: 'text', id: 'pje-oab-num', placeholder: 'Número (ex: 244384)', style: { width: '160px', marginLeft: '8px' } }),
+          h('select', { id: 'pje-oab-uf', style: { marginLeft: '4px' } },
+            ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO']
+              .map(uf => h('option', { value: uf, selected: uf === 'RJ' }, uf))
+          ),
+          h('button', { class: 'btn-primary', style: { marginLeft: '8px' }, onclick: async () => {
+            const num = (document.getElementById('pje-oab-num') || {}).value || '';
+            const uf = (document.getElementById('pje-oab-uf') || {}).value || 'RJ';
+            if (!num || !num.trim()) { toast('Informe o número da OAB', 'err'); return; }
+            try {
+              toast('Buscando publicações...', 'info');
+              const r = await API.req('POST', '/api/monitoring/oab-search', { numero_oab: num.trim(), uf: uf });
+              const pubsFound = r.pubs_found || 0;
+              const inserted = r.inserted || 0;
+              const newCases = r.new_cases || 0;
+              const samplePubs = r.pubs || [];
+              let msg = 'OAB/' + uf + ' ' + num + ': ' + pubsFound + ' publicações, ' + inserted + ' inseridas';
+              if (newCases > 0) msg += ', ' + newCases + ' caso(s) criado(s)';
+              toast(msg, inserted > 0 ? 'ok' : 'info');
+              if (samplePubs.length > 0) {
+                openPjePubsModal({ case_title: 'OAB/' + uf + ' ' + num, cnj: '' }, samplePubs);
+              }
+              await loadAll(); render();
+            } catch (e) { toast('Erro: ' + (e.message || e), 'err'); }
+          } }, '🔎 Buscar'),
+          h('span', { class: 'mon-oab-help' }, 'Paliativo: busca por OAB mesmo que o cadastro da equipe esteja incompleto. Resultado vai como andamento nos casos cujo CNJ bate, ou cria novos casos.')
+        ),
         h('div', { class: 'mon-oab-banner' },
           h('strong', null, '🔎 Busca por CNJ (Comunica PJE):'),
           ' Cada caso monitorado busca publicacoes pelo seu CNJ no ',

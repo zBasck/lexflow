@@ -360,6 +360,7 @@ def init_db():
             pass  # coluna ja existe
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cases_deleted ON cases(deleted_at)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_cases_code ON cases(code) WHERE code IS NOT NULL AND code != ''")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_clients_deleted ON clients(deleted_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks(deleted_at)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC)")
@@ -591,7 +592,7 @@ def require_auth(handler):
     if not row:
         conn.close()
         return None
-    user = conn.execute("SELECT id,name,email,role,oab,phone FROM users WHERE id=?", (row["user_id"],)).fetchone()
+    user = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,photo FROM users WHERE id=?", (row["user_id"],)).fetchone()
     conn.close()
     if not user:
         return None
@@ -855,7 +856,7 @@ def auth_register(handler):
     )
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO sessions(token,user_id,created_at) VALUES (?,?,?)", (token, uid, now))
-    user = conn.execute("SELECT id,name,email,role,oab,phone FROM users WHERE id=?", (uid,)).fetchone()
+    user = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,photo FROM users WHERE id=?", (uid,)).fetchone()
     conn.commit()
     conn.close()
     return json_response(handler, 200, {"token": token, "user": dict(user)})
@@ -1022,9 +1023,20 @@ def make_create(table, fields):
                 return json_response(handler, 400, {"error": "Título do caso é obrigatório."})
             if not (body.get("area") or "").strip():
                 return json_response(handler, 400, {"error": "Área jurídica é obrigatória."})
-            if body.get("code") and not valid_cnj(body["code"]):
-                # Não bloqueia: aceita formato livre, mas avisa (CNJ é opcional para casos novos)
-                pass
+            # Bloqueia duplicacao de caso pelo codigo (CNJ)
+            if body.get("code") and str(body["code"]).strip():
+                code_norm = str(body["code"]).strip()
+                dup = conn.execute(
+                    "SELECT id, title FROM cases WHERE code = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
+                    (code_norm,),
+                ).fetchone()
+                if dup:
+                    conn.close()
+                    return json_response(handler, 409, {
+                        "error": "Ja existe um caso com este CNJ.",
+                        "existing_case_id": dup[0],
+                        "existing_case_title": dup[1],
+                    })
         elif table == "tasks":
             if not (body.get("title") or "").strip():
                 return json_response(handler, 400, {"error": "Título da tarefa é obrigatório."})
@@ -1184,7 +1196,7 @@ def users_list(handler):
     if not require_auth(handler):
         return json_response(handler, 401, {"error": "Nao autenticado."})
     conn = db()
-    rows = conn.execute("SELECT id,name,email,role,oab,phone,created_at FROM users ORDER BY name").fetchall()
+    rows = conn.execute("SELECT id,name,email,role,oab,oab_uf,phone,photo,created_at FROM users ORDER BY name").fetchall()
     data = [serialize_row(r) for r in rows]
     conn.close()
     return json_response(handler, 200, data)
@@ -1217,8 +1229,8 @@ def users_create(handler):
     uid = str(uuid.uuid4())
     now = datetime.datetime.now().isoformat(timespec="seconds")
     conn.execute(
-        "INSERT INTO users(id,name,email,password,role,oab,phone,created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (uid, name, email, hash_pwd(password), role, oab, phone, now),
+        "INSERT INTO users(id,name,email,password,role,oab,oab_uf,phone,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (uid, name, email, hash_pwd(password), role, oab, oab_uf, phone, now),
     )
     audit(conn, user["id"], "create", "users", uid, after={"name": name, "email": email, "role": role})
     conn.commit()
@@ -2045,6 +2057,92 @@ def monitor_settings_set(handler, body):
     return monitor_settings_get(handler)
 
 
+def monitor_oab_search(handler, body):
+    """v3.1: POST /api/monitoring/oab-search — busca paliativa por OAB (sem CNJ).
+    Body: { numero_oab: "244384", uf: "RJ" }.
+    Usa scraper_pje_for_oab e reaplica a logica do worker (auto-cria caso, dedup forte).
+    """
+    user = require_auth(handler)
+    if not user:
+        return json_response(handler, 401, {"error": "Nao autenticado."})
+    if not is_socio(user):
+        return json_response(handler, 403, {"error": "forbidden"})
+    if not HAS_MONITOR or _monitor is None:
+        return json_response(handler, 503, {"error": "monitor indisponivel"})
+
+    numero_oab = re.sub(r"[^0-9]", "", str((body or {}).get("numero_oab") or ""))
+    uf = ((body or {}).get("uf") or "RJ").upper().strip()
+    if not numero_oab:
+        return json_response(handler, 400, {"error": "numero_oab obrigatorio"})
+
+    try:
+        res = _monitor.scraper_pje_for_oab(numero_oab, uf, timeout=45)
+    except Exception as e:
+        return json_response(handler, 500, {"error": "falha no Comunica PJE", "detail": str(e)[:200]})
+    if res.get("error"):
+        return json_response(handler, 502, {"error": res["error"], "url": res.get("url", "")})
+
+    pubs = res.get("pubs", [])
+    worker = MONITOR_WORKER.get("instance")
+    total_inserted = 0
+    new_cases = 0
+    sample_pubs = []
+    if worker:
+        for pub in pubs:
+            cnj = pub.get("cnj", "")
+            case_id = None
+            if cnj:
+                case_id = worker._find_case_by_cnj(cnj)
+                if not case_id:
+                    case_id = worker._auto_create_case(pub, user["id"])
+                    if case_id:
+                        new_cases += 1
+            if not case_id:
+                continue
+            ins = worker._insert_dedupe_pubs_for_case(case_id, [pub])
+            total_inserted += ins
+            if ins > 0:
+                sample_pubs.append({
+                    "date": (pub.get("date") or "")[:10],
+                    "title": (pub.get("title") or "")[:200],
+                    "cnj": pub.get("cnj", ""),
+                    "case_id": case_id,
+                    "new_case": True,
+                    "url": pub.get("url", ""),
+                })
+    # Log
+    try:
+        conn = db()
+        conn.execute(
+            "INSERT INTO monitoring_log(id, case_id, checked_at, source, ok, message, movements_found)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                secrets.token_hex(8),
+                None,
+                datetime.datetime.now().isoformat(timespec="seconds"),
+                "pje_oab_search",
+                1,
+                f"oab:{uf} {numero_oab} - {len(pubs)} pubs, {total_inserted} inseridas, {new_cases} casos criados",
+                total_inserted,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    return json_response(handler, 200, {
+        "source": "comunica_pje",
+        "oab": f"{uf} {numero_oab}",
+        "tribunal": res.get("tribunal", ""),
+        "url": res.get("url", ""),
+        "pubs_found": len(pubs),
+        "inserted": total_inserted,
+        "new_cases": new_cases,
+        "pubs": sample_pubs[:10],
+    })
+
+
 def monitor_log_list(handler):
     """GET /api/monitoring/log — ultimas N checagens."""
     user = require_auth(handler)
@@ -2251,6 +2349,7 @@ route("GET",  "/api/monitoring/status",        monitor_status)
 route("GET",  "/api/monitoring/settings",      monitor_settings_get)
 route("POST", "/api/monitoring/settings",      monitor_settings_set)
 route("GET",  "/api/monitoring/log",           monitor_log_list)
+route("POST", "/api/monitoring/oab-search",      monitor_oab_search)
 
 route("POST",   "/api/cases/{id}/folder",        case_folder_set)
 route("DELETE", "/api/cases/{id}/folder",        case_folder_unset)
