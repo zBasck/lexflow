@@ -335,6 +335,57 @@ def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int
 
 
 
+def _scraper_pje_selenium(url: str, timeout: int = 30) -> list:
+    """Abre o Comunica PJE no Chrome headless, espera o Angular renderizar
+    a tabela de publicacoes, e retorna o HTML pronto para _parse_pje_html().
+
+    Se o selenium/Chrome nao estiver disponivel, retorna [] (fallback).
+    """
+    if not _SELENIUM_AVAILABLE:
+        return []
+    driver = None
+    try:
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1280,1024")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        # Usa webdriver-manager para baixar/cachedriver se precisar
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=opts)
+        driver.set_page_load_timeout(timeout)
+        driver.get(url)
+        # Espera a tabela de publicacoes aparecer (Angular renderiza apos JS)
+        # O seletor abaixo cobre a tabela do Comunica PJE e o "sem resultados"
+        wait = WebDriverWait(driver, timeout)
+        # Tenta esperar a tabela OU a mensagem de vazio
+        try:
+            wait.until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, "table tbody tr, .resultado-vazio, .empty, [class*=resultado]")                 or "nenhuma" in d.page_source.lower()                 or "nao ha" in d.page_source.lower()
+            )
+        except Exception:
+            pass  # timeout — segue e tenta extrair mesmo assim
+        # Espera extra para Angular terminar de renderizar
+        time.sleep(2)
+        html = driver.page_source
+        return _parse_pje_html(html)
+    except Exception as e:
+        # Falha no selenium — retorna vazio, fallback cuida
+        return []
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
 def scraper_pje(numero_processo: str = "", numero_oab: str = "", uf: str = "RJ", timeout: int = 30) -> list:
     """Consulta o Comunica PJE e retorna lista de publicacoes.
     
@@ -389,6 +440,9 @@ def scraper_pje(numero_processo: str = "", numero_oab: str = "", uf: str = "RJ",
     except Exception:
         return []
     pubs = _parse_pje_html(html)
+    if not pubs:
+        # SPA Angular — HTML vem vazio sem JS. Tenta Selenium.
+        pubs = _scraper_pje_selenium(url, timeout=timeout)
     for p in pubs:
         p["url"] = url
         p["tribunal"] = sigla_tribunal
@@ -397,6 +451,31 @@ def scraper_pje(numero_processo: str = "", numero_oab: str = "", uf: str = "RJ",
 
 
 
+
+
+# === Selenium (opcional) ===
+# Comunica PJE é um SPA Angular, então o HTML retornado pelo urllib vem vazio.
+# Para extrair as publicações de verdade, precisamos de um browser real (headless).
+# Essas importações são opcionais — se o selenium não estiver instalado ou o
+# Chrome não existir, o scraper cai de volta para o fallback HTML/API.
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    _SELENIUM_AVAILABLE = True
+except Exception:
+    _SELENIUM_AVAILABLE = False
+    webdriver = None
+    Service = None
+    Options = None
+    By = None
+    WebDriverWait = None
+    EC = None
+    ChromeDriverManager = None
 
 # --- Extracao de dados do caso a partir do texto da publicacao ---
 
