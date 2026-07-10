@@ -524,6 +524,34 @@
           barras
         )
       ),
+      h('div', { class: 'card', style: { marginTop: '18px' } },
+        h('div', { class: 'card-header' },
+          h('div', null,
+            h('h3', null, '\u{1F4DD} Publicacoes recentes do monitoramento'),
+            h('div', { class: 'sub' }, 'Ultimas 10 publicacoes do Comunica PJE')
+          ),
+          h('button', { class: 'btn btn-sm btn-ghost', onclick: () => go('monitoring') }, 'Ir para Monitoramento')
+        ),
+        (!d.recent_pubs || d.recent_pubs.length === 0)
+          ? h('div', { class: 'empty' },
+              h('div', { class: 'empty-icon' }, '\u{1F4E2}'),
+              h('h3', null, 'Nenhuma publicacao ainda'),
+              h('p', null, 'Sincronize o monitoramento para receber publicacoes do Comunica PJE.')
+            )
+          : h('div', { class: 'pubs-list' },
+              ...d.recent_pubs.map(p => h('div', { class: 'pub-item', onclick: () => go('case-detail', { id: p.case_id }) },
+                h('div', { class: 'pub-date' }, p.date ? p.date.split('-').reverse().join('/') : ''),
+                h('div', { class: 'pub-body' },
+                  h('div', { class: 'pub-title' }, p.title || '(publicacao)'),
+                  h('div', { class: 'pub-meta' },
+                    h('span', { class: 'badge' }, p.case_code || 'CNJ nao identificado'),
+                    p.case_title ? h('span', null, ' \u2022 ' + p.case_title.slice(0, 50)) : null
+                  ),
+                  p.description ? h('div', { class: 'pub-desc' }, p.description.slice(0, 180) + (p.description.length > 180 ? '...' : '')) : null
+                )
+              ))
+            )
+      ),
       h('div', { class: 'grid-1-2', style: { marginTop: '18px' } },
         h('div', { class: 'card' },
           h('div', { class: 'card-header' },
@@ -662,6 +690,7 @@
         next_deadline: fd.get('next_deadline') || null,
         responsible_id: fd.get('responsible_id') || null,
         tags: fd.get('tags'),
+        system: fd.get('system') || 'pje',
       };
       try {
         if (isEdit) await API.put('/api/cases/' + c.id, data);
@@ -715,8 +744,20 @@
         h('div', { class: 'form-group' }, h('label', null, 'Parte contraria'), h('input', { type: 'text', name: 'opposing_party', value: (c && c.opposing_party) || '' }))
       ),
       h('div', { class: 'form-row' },
-        h('div', { class: 'form-group' }, h('label', null, 'Proximo prazo'), h('input', { type: 'date', name: 'next_deadline', value: (c && c.next_deadline) || '' })),
+        h('div', { class: 'form-group' }, h('label', null, 'Sistema do processo'), h('select', { name: 'system' },
+          h('option', { value: 'pje', selected: !c || !c.system || c.system === 'pje' }, 'PJE (Comunica PJE)'),
+          h('option', { value: 'eproc', selected: c && c.system === 'eproc' }, 'eProc'),
+          h('option', { value: 'projudi', selected: c && c.system === 'projudi' }, 'Projudi'),
+          h('option', { value: 'esaj', selected: c && c.system === 'esaj' }, 'e-SAJ'),
+          h('option', { value: 'trt', selected: c && c.system === 'trt' }, 'TRT (PJE Trabalhista)'),
+          h('option', { value: 'stf', selected: c && c.system === 'stf' }, 'STF'),
+          h('option', { value: 'stj', selected: c && c.system === 'stj' }, 'STJ'),
+          h('option', { value: 'manual', selected: c && c.system === 'manual' }, 'Cadastro manual (sem sync)')
+        )),
         h('div', { class: 'form-group' }, h('label', null, 'Tags (separadas por virgula)'), h('input', { type: 'text', name: 'tags', value: (c && c.tags) || '' }))
+      ),
+      h('div', { class: 'form-row' },
+        h('div', { class: 'form-group' }, h('label', null, 'Proximo prazo'), h('input', { type: 'date', name: 'next_deadline', value: (c && c.next_deadline) || '' }))
       ),
       h('div', { class: 'form-group' }, h('label', null, 'Descricao'), h('textarea', { name: 'description' }, (c && c.description) || ''))
     );
@@ -2571,17 +2612,25 @@
           if (cfg.key === 'later') { const d = new Date(today); d.setDate(d.getDate() + 30); return d.toISOString().slice(0,10); }
           return null;
         })();
-        try {
-          await API.req('PUT', '/api/tasks/' + taskId, {
-            due_date: newDate,
-            status: cfg.key === 'overdue' ? 'pendente' : (cfg.key === 'later' && !newDate ? 'pendente' : 'pendente')
-          });
-          toast('Tarefa movida para "' + cfg.title + '"', 'ok');
-          await loadAll();
-          render();
-        } catch (err) {
-          toast('Erro ao mover: ' + err.message, 'err');
-        }
+              // Optimistic update (instantaneo, nao recarrega tudo)
+      const taskIdx = S.data.tasks.findIndex(x => x.id === taskId);
+      const oldTask = taskIdx >= 0 ? Object.assign({}, S.data.tasks[taskIdx]) : null;
+      if (taskIdx >= 0) {
+        S.data.tasks[taskIdx].due_date = newDate;
+        S.data.tasks[taskIdx].status = 'pendente';
+      }
+      render();
+      try {
+        await API.req('PUT', '/api/tasks/' + taskId, {
+          due_date: newDate,
+          status: 'pendente'
+        });
+        toast('Tarefa movida para "' + cfg.title + '"', 'ok');
+      } catch (err) {
+        if (oldTask && taskIdx >= 0) S.data.tasks[taskIdx] = oldTask;
+        render();
+        toast('Erro ao mover: ' + err.message, 'err');
+      }
       },
     },
       h('div', { class: 'kanban-col-header', style: `background:${cfg.bg}; border-bottom: 3px solid ${cfg.color}` },

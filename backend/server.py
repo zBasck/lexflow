@@ -212,11 +212,11 @@ def init_db():
             responsible_id TEXT,
             tags TEXT,
             monitoring_active INTEGER DEFAULT 1,
+            system TEXT DEFAULT 'pje',
             created_at TEXT NOT NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL,
             FOREIGN KEY(responsible_id) REFERENCES users(id) ON DELETE SET NULL
         )""",
-        """ALTER TABLE cases ADD COLUMN monitoring_active INTEGER DEFAULT 1""",
         """CREATE TABLE IF NOT EXISTS case_updates (
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -366,6 +366,8 @@ def init_db():
         "ALTER TABLE documents ADD COLUMN path TEXT",
         "ALTER TABLE documents ADD COLUMN mime_type TEXT",
         "ALTER TABLE documents ADD COLUMN original_name TEXT",
+        "ALTER TABLE cases ADD COLUMN system TEXT DEFAULT 'pje'",
+        "ALTER TABLE cases ADD COLUMN monitoring_active INTEGER DEFAULT 1",
     ):
         try:
             cur.execute(col_sql)
@@ -458,9 +460,9 @@ def seed(conn):
         csid = str(uuid.uuid4())
         case_ids.append(csid)
         conn.execute(
-            """INSERT INTO cases(id,code,title,client_id,area,status,priority,value,court,opposing_party,description,next_deadline,responsible_id,tags,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (csid, cs[0], cs[1], client_ids[cs[2]] if cs[2] is not None else None, cs[3], cs[4], cs[5], cs[6], cs[7], cs[8], cs[9], cs[10], user_ids.get(cs[11]), cs[12], now),
+            """INSERT INTO cases(id,code,title,client_id,area,status,priority,value,court,opposing_party,description,next_deadline,responsible_id,tags,system,monitoring_active,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (csid, cs[0], cs[1], client_ids[cs[2]] if cs[2] is not None else None, cs[3], cs[4], cs[5], cs[6], cs[7], cs[8], cs[9], cs[10], user_ids.get(cs[11]), cs[12], 'pje', 1, now),
         )
 
     updates = [
@@ -1543,9 +1545,20 @@ def dashboard_summary(handler):
     received_total = sumval("SELECT SUM(amount) FROM transactions WHERE type='receita' AND status='pago'")
     paid_total = sumval("SELECT SUM(amount) FROM transactions WHERE type='despesa' AND status='pago'")
 
+    # Últimas publicações (case_updates com type='publicacao')
+    recent_pubs_raw = conn.execute(
+        "SELECT u.id, u.case_id, u.date, u.title, u.description, u.created_at,"
+        " c.code AS case_code, c.title AS case_title, c.area AS case_area"
+        " FROM case_updates u LEFT JOIN cases c ON c.id = u.case_id"
+        " WHERE u.type='publicacao' AND (u.deleted_at IS NULL OR u.deleted_at='')"
+        " ORDER BY COALESCE(u.created_at, u.date) DESC LIMIT 10"
+    ).fetchall()
+    recent_pubs = [dict(r) for r in recent_pubs_raw]
+
     conn.close()
 
     return json_response(handler, 200, {
+        "recent_pubs": recent_pubs,
         "kpi": {
             "active_cases": active_cases,
             "total_cases": total_cases,

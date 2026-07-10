@@ -843,7 +843,7 @@ class MonitoringWorker(threading.Thread):
             cnj = pub.get("cnj", "")
             if not cnj:
                 continue
-            case_id = self._find_case_by_cnj(cnj)
+            case_id = self._find_case_by_cnj(cnj, user_id)
             if not case_id:
                 case_id = self._auto_create_case(pub, user_id)
                 if case_id:
