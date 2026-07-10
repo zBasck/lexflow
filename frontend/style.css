@@ -1317,3 +1317,31 @@ body[data-theme="dark"] .result-title { color: var(--ink); }
   .kanban-board { grid-template-columns: 1fr; }
   .mon-log-row { grid-template-columns: 1fr; gap: 4px; }
 }
+/* ========== PRIORIDADES (URGENCY) ========== */
+.list-item.urgency-0 { border-left: 4px solid transparent; }
+.list-item.urgency-1 { border-left: 4px solid #3b82f6; }
+.list-item.urgency-2 { border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.04); }
+.list-item.urgency-3 { border-left: 4px solid #ef4444; background: rgba(239, 68, 68, 0.08); font-weight: 600; }
+body[data-theme="dark"] .list-item.urgency-1 { border-left-color: #60a5fa; }
+body[data-theme="dark"] .list-item.urgency-2 { background: rgba(245, 158, 11, 0.12); }
+body[data-theme="dark"] .list-item.urgency-3 { background: rgba(239, 68, 68, 0.15); }
+
+/* ========== PUBLICACOES RECENTES (DASHBOARD) ========== */
+.pub-card {
+  padding: 10px 12px; border-radius: 8px; background: var(--bg-2);
+  border: 1px solid var(--border); margin-bottom: 8px;
+}
+.pub-card:hover { background: var(--bg-3); }
+.pub-date { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.pub-title { font-weight: 600; font-size: 13px; color: var(--ink); }
+.pub-cnj { font-size: 11px; color: var(--muted); font-family: monospace; margin: 2px 0; }
+.pub-desc { font-size: 12px; color: var(--ink-2); margin-top: 4px; line-height: 1.4; }
+
+/* ========== COMENTARIOS ========== */
+.comments-list { margin: 12px 0; max-height: 400px; overflow-y: auto; }
+.comment-item { padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg-2); border-radius: 6px; margin-bottom: 8px; }
+.comment-author { font-weight: 600; font-size: 12px; color: var(--ink); }
+.comment-time { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.comment-text { font-size: 13px; color: var(--ink-2); margin-top: 4px; white-space: pre-wrap; }
+.comment-form { display: flex; gap: 8px; margin-top: 12px; }
+.comment-form textarea { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--ink); font-family: inherit; }

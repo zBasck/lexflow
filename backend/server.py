@@ -337,6 +337,16 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         )""",
+        """CREATE TABLE IF NOT EXISTS case_comments (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            user_id TEXT,
+            text TEXT NOT NULL,
+            mentions TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+        )""",
         """CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,
             user_id TEXT,
@@ -350,7 +360,10 @@ def init_db():
         )""",
     ]
     for s in statements:
-        cur.execute(s)
+        try:
+            cur.execute(s)
+        except Exception:
+            pass  # CREATE TABLE idempotente nao cobre conflito de colunas pre-existentes
 
     # Adicionar coluna deleted_at nas tabelas principais (idempotente)
     for t in ("clients", "cases", "tasks", "events", "transactions", "documents", "case_updates"):

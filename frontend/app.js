@@ -106,7 +106,16 @@
       const pad = n => String(n).padStart(2, '0');
       return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ', ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     } catch (e) { return String(iso); }
+  }
+  const escapeHTML = (s) => { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); };
+  const urgencyLevel = (dueDate, status) => {
+    if (status === 'concluida' || !dueDate) return 0;
+    const today = new Date(todayISO());
+    const due = new Date(dueDate);
+    const diff = Math.floor((due - today) / (1000 * 60 * 60 * 24));
+    if (diff < 0) return 3; if (diff <= 3) return 3; if (diff <= 7) return 2; if (diff <= 14) return 1; return 0;
   };
+;
   const initials = (name) => {
     if (!name) return '?';
     return name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
@@ -1549,8 +1558,9 @@
               ...list.map(t => {
                 const responsible = S.data.users.find(u => u.id === t.responsible_id);
                 const cs = S.data.cases.find(c => c.id === t.case_id);
+                const urgency = urgencyLevel(t.due_date, t.status);
                 const isOverdue = t.status !== 'concluida' && t.due_date && t.due_date < todayISO();
-                return h('div', { class: 'list-item' + (t.status === 'concluida' ? ' done' : '') },
+                return h('div', { class: 'list-item urgency-' + urgency + (t.status === 'concluida' ? ' done' : '') },
                   h('div', { class: 'check ' + (t.status === 'concluida' ? 'done' : ''), onclick: () => toggleTask(t.id, t.status) }, t.status === 'concluida' ? '✓' : ''),
                   h('div', { class: 'body' },
                     h('div', { class: 'title' + (t.status === 'concluida' ? ' done' : '') }, t.title),
@@ -1562,6 +1572,7 @@
                   ),
                   h('div', { class: 'right' },
                     isOverdue ? badge('Atrasada', 'danger') : null,
+                    urgency > 0 ? badge(urgency === 3 ? 'Urgente' : urgency === 2 ? 'Esta semana' : 'Em breve', urgency === 3 ? 'danger' : urgency === 2 ? 'warning' : 'info') : null,
                     priorityBadge(t.priority),
                     h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 6px', fontSize: '11px' }, onclick: async () => {
                       if (!confirm('Excluir a tarefa "' + t.title + '"?')) return;
@@ -3053,5 +3064,64 @@
                      'Acesse o sistema para ver as últimas movimentações dos processos.');
     }
   }
+
+
+  async function renderRecentPubs(container) {
+    try {
+      const r = await API.req('GET', '/api/dashboard/recent-pubs?limit=8');
+      const pubs = (r && r.pubs) || [];
+      if (!pubs.length) { container.innerHTML = '<div class="empty">Sem publicações recentes</div>'; return; }
+      container.innerHTML = pubs.map(p => {
+        const dt = (p.date || '').slice(0, 10);
+        return '<div class="pub-card">'
+          + '<div class="pub-date">' + (dt ? new Date(dt).toLocaleDateString('pt-BR') : '—') + '</div>'
+          + '<div class="pub-title">' + escapeHTML(p.title || 'Publicação') + '</div>'
+          + '<div class="pub-cnj">' + escapeHTML(p.cnj || '') + '</div>'
+          + '<div class="pub-desc">' + escapeHTML((p.description || '').slice(0, 150)) + ((p.description||'').length > 150 ? '…' : '') + '</div>'
+          + '</div>';
+      }).join('');
+    } catch (e) { container.innerHTML = '<div class="empty">Erro ao carregar</div>'; }
+  }
+
+  async function renderCaseComments(caseId, container) {
+    container.innerHTML = '<div class="comments-list">Carregando…</div>';
+    try {
+      const r = await API.req('GET', '/api/cases/' + caseId + '/comments');
+      const cs = (r && r.comments) || [];
+      let html = '<div class="comments-list">';
+      if (!cs.length) html += '<div class="empty">Nenhum comentário ainda</div>';
+      else cs.forEach(c => {
+        html += '<div class="comment-item">'
+          + '<div class="comment-author">' + escapeHTML(c.user_name || 'Anônimo') + '</div>'
+          + '<div class="comment-text">' + escapeHTML(c.text || '') + '</div>'
+          + '<div class="comment-time">' + ((c.created_at || '').slice(0,16).replace('T',' ')) + '</div>'
+          + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="comment-form">'
+        + '<textarea id="cmt-text" placeholder="Escreva um comentário…" rows="2"></textarea>'
+        + '<button class="btn btn-primary" id="cmt-send">Enviar</button>'
+        + '</div>';
+      container.innerHTML = html;
+      const btn = document.getElementById('cmt-send');
+      if (btn) btn.onclick = async function() {
+        const t = document.getElementById('cmt-text');
+        if (!t || !t.value.trim()) return;
+        try { await API.req('POST', '/api/cases/' + caseId + '/comments', { text: t.value }); t.value = ''; toast('Comentário enviado', 'success'); }
+        catch (e) { toast(e.message, 'error'); }
+      };
+    } catch (e) { container.innerHTML = '<div class="empty">Erro ao carregar</div>'; }
+  }
+
+  async function callLLM(action, payload) {
+    try {
+      const r = await API.req('POST', '/api/llm/' + action, payload || {});
+      if (r && r.error) { toast(r.error, 'error'); return null; }
+      return r;
+    } catch (e) { toast('LLM indisponível: ' + e.message, 'error'); return null; }
+  }
+  async function llmSummarizeText(text) { const r = await callLLM('summarize', { text }); return r && r.summary; }
+  async function llmClassifyText(text) { return await callLLM('classify', { text }); }
+  async function llmSuggestCase(caseId) { return await callLLM('suggest', { case_id: caseId }); }
 
 })();

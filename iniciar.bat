@@ -1,47 +1,20 @@
 @echo off
-setlocal
-title LexFlow - Servidor Local
-cd /d "%~dp0"
-
-set "URL=http://localhost:8765"
-
-echo ============================================
+title LexFlow - Sistema de Gestao Juridica
+echo ============================================================
 echo   LexFlow - Sistema de Gestao Juridica
-echo ============================================
-echo.
-
-where python >nul 2>nul
+echo ============================================================
+python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERRO] Python nao foi encontrado neste computador.
-    echo.
-    echo Instale o Python uma unica vez.
-    echo   1. Acesse https://www.python.org/downloads/
-    echo   2. Baixe a versao mais recente do Python 3
-    echo   3. NA INSTALACAO, marque a opcao "Add Python to PATH"
-    echo   4. Apos instalar, execute este arquivo novamente
-    echo.
-    echo Ou rode o arquivo instalar_python.bat que baixa tudo automatico.
-    echo.
+    echo [ERRO] Python nao encontrado. Instale Python 3.10+ e adicione ao PATH.
     pause
     exit /b 1
 )
-
-echo Iniciando LexFlow em %URL%
-echo.
-echo Acesse esta URL no navegador (Chrome, Edge ou Firefox).
-echo.
-echo Para encerrar o servidor, feche esta janela ou pressione Ctrl+C.
-echo ============================================
-echo.
-
-if not exist "data" mkdir data
-
-python backend\server.py
-if errorlevel 1 (
-    echo.
-    echo [ERRO] O servidor Python nao conseguiu iniciar.
-    echo Verifique a mensagem acima para mais detalhes.
-    pause
+echo [1/2] Verificando dependencias...
+pip install -q -r requirements.txt 2>nul
+if exist scripts\lexflow-monitor.py (
+    start "LexFlow Monitor" /min python scripts\lexflow-monitor.py --interval 60
+    echo [INFO] Worker de monitoramento iniciado em background.
 )
-
-endlocal
+echo [2/2] Iniciando servidor na porta 8765...
+cd backend
+python server.py

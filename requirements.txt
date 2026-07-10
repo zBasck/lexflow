@@ -1,14 +1,5 @@
-# LexFlow — dependências Python
-# Instale com: pip install -r requirements.txt
-
-# Criptografia (Fernet para criptografar tokens e OABs em repouso)
 cryptography>=41.0.0
-
-# HTTP padrão do Python é urllib (built-in), sem requests
-
-# Selenium + webdriver-manager — necessários para o scraper do Comunica PJE
-# (o site é um SPA Angular, então urllib/requests retornam HTML vazio).
-# Sem essas deps, o scraper cai no fallback (retorna 0 publicações) — funciona,
-# mas não traz nada. Para pegar publicações REAIS, instale as duas linhas abaixo.
 selenium>=4.15.0
 webdriver-manager>=4.0.1
+reportlab>=4.0.0
+Pillow>=10.0.0
