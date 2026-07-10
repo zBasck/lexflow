@@ -280,12 +280,13 @@ def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int
     numero_processo: CNJ (somente digitos) para busca por processo especifico.
     Pelo menos UM dos dois precisa ser fornecido.
     """
-    # O Comunica PJE expoe uma API interna em /api/consulta/... (Angular faz GET)
-    # Sem auth publica, mas o endpoint aspx pode responder com cookies/JSF
+    # O Patrick definiu o link modelo (sem data e sem siglaTribunal):
+    # https://comunica.pje.jus.br/consulta?numeroProcesso=08100987820258190212
+    # O Angular do Comunica PJE descobre o tribunal sozinho a partir do CNJ.
     api_urls = []
     if numero_processo:
         api_urls.append(
-            f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroProcesso={urllib.parse.quote(numero_processo)}&format=json"
+            f"https://comunica.pje.jus.br/consulta?numeroProcesso={urllib.parse.quote(numero_processo)}&format=json"
         )
         api_urls.append(
             f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroProcesso={urllib.parse.quote(numero_processo)}"
@@ -295,7 +296,7 @@ def _scraper_pje_api(numero_oab: str, uf: str, sigla_tribunal: str, timeout: int
             f"https://comunica.pje.jus.br/api/v1/comunicacao?numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}"
         )
         api_urls.append(
-            f"https://comunica.pje.jus.br/consulta?siglaTribunal={urllib.parse.quote(sigla_tribunal)}&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}&format=json"
+            f"https://comunica.pje.jus.br/consulta?numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}&format=json"
         )
     for api_url in api_urls:
         try:
@@ -525,9 +526,10 @@ def scraper_pje_for_oab(numero_oab: str, uf: str = "RJ", timeout: int = 30) -> d
         return out
     sigla = uf_to_tribunal(uf) or "TJRJ"
     out["tribunal"] = sigla
+    # Link modelo (sem siglaTribunal - Comunica PJE descobre pela UF da OAB)
     url = (
-        f"{COMUNICA_PJE_URL}?siglaTribunal={urllib.parse.quote(sigla)}"
-        f"&numeroOab={urllib.parse.quote(numero_oab)}&ufOab={urllib.parse.quote(uf)}"
+        f"{COMUNICA_PJE_URL}?numeroOab={urllib.parse.quote(numero_oab)}"
+        f"&ufOab={urllib.parse.quote(uf)}"
     )
     out["url"] = url
     try:
@@ -557,7 +559,8 @@ def scraper_pje_for_case(cnj: str, oab_num: str = "", oab_uf: str = "RJ", timeou
     if len(digits) != 20:
         out["error"] = f"CNJ invalido: {cnj} (esperado 20 digitos, obtido {len(digits)})"
         return out
-    url = f"{COMUNICA_PJE_URL}?siglaTribunal={urllib.parse.quote(sigla)}&numeroProcesso={urllib.parse.quote(digits)}"
+    # Link modelo do Patrick (sem siglaTribunal - Comunica PJE descobre pelo CNJ)
+    url = f"{COMUNICA_PJE_URL}?numeroProcesso={urllib.parse.quote(digits)}"
     out["url"] = url
     
     # Primeiro tenta a API JSON (passando o CNJ para busca por processo)

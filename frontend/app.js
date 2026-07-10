@@ -814,6 +814,31 @@
       catch (err) { toast(err.message, 'error'); }
     };
 
+    const syncPJEForCase = async () => {
+      if (!c.code) {
+        toast('Este caso nao tem CNJ cadastrado. Edite o caso e informe o numero CNJ.', 'error');
+        return;
+      }
+      const btn = event && event.target;
+      const orig = btn ? btn.innerHTML : null;
+      if (btn) { btn.disabled = true; btn.innerHTML = '🔄 Sincronizando...'; }
+      try {
+        const r = await API.req('POST', '/api/cases/' + cid + '/monitor/run', {});
+        if (r.pubs_found > 0) {
+          const nf = (r.new_cases || 0) > 0 ? `, ${r.new_cases} caso(s) criado(s)` : '';
+          toast(`PJE: ${r.pubs_found} pub(s) encontrada(s), ${r.inserted} inserida(s)${nf}`, 'success');
+          render();
+        } else {
+          toast('PJE: nenhuma publicacao encontrada para este CNJ. Pode ser que o caso nao tenha movimentacoes recentes ou o site retornou vazio.', 'warning');
+        }
+        if (r.url) console.log('Link Comunica PJE:', r.url);
+      } catch (err) {
+        toast('Erro no sync: ' + err.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = orig || '🔄 Sync PJE'; }
+      }
+    };
+
     return AppShell(c.title,
       h('div', { class: 'mb-3' },
         h('button', { class: 'btn btn-ghost btn-sm', onclick: () => go('cases') }, '← Voltar para casos')
@@ -823,7 +848,8 @@
           h('div', { class: 'card mb-3' },
             h('div', { class: 'card-header' },
               h('div', null, h('h3', null, 'Informacoes do caso'), h('div', { class: 'sub' }, c.code || 'Sem numero CNJ')),
-              h('div', { class: 'flex gap-2' },
+              h('div', { class: 'flex gap-2 flex-wrap' },
+                h('button', { class: 'btn btn-sm btn-primary', onclick: syncPJEForCase, title: 'Buscar publicacoes no Comunica PJE pelo CNJ deste caso' }, '🔄 Sync PJE'),
                 h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openCaseModal(c) }, '✏️ Editar'),
                 h('button', { class: 'btn btn-sm btn-danger', onclick: onDelete }, '🗑 Excluir')
               )

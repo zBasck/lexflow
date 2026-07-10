@@ -758,6 +758,78 @@ body[data-theme="dark"] .mon-oab-badge { background: var(--gold-soft); color: va
 body[data-theme="dark"] .kanban-col-header { background: var(--bg-2); border-bottom-color: var(--line); }
 body[data-theme="dark"] .kanban-col-header.overdue { background: rgba(220,80,80,0.18); color: #ffb3b3; }
 body[data-theme="dark"] .kanban-col-header.today { background: rgba(220,150,80,0.18); color: #ffd699; }
+
+/* --- DARK MODE: KPIs, area de barras, tabelas e textos auxiliares --- */
+body[data-theme="dark"] .kpi { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .kpi-value { color: var(--ink); }
+body[data-theme="dark"] .kpi-sub { color: var(--ink-3); }
+body[data-theme="dark"] .kpi-icon { background: var(--gold-soft); }
+
+body[data-theme="dark"] .area-bar-track { background: var(--bg-3); }
+body[data-theme="dark"] .area-bar-label,
+body[data-theme="dark"] .area-bar-count { color: var(--ink-2); }
+body[data-theme="dark"] .area-bar-pct { color: var(--ink-3); }
+
+body[data-theme="dark"] .case-card { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .case-card:hover { border-color: var(--navy-3); }
+body[data-theme="dark"] .case-card-title { color: var(--ink); }
+body[data-theme="dark"] .case-card-meta { color: var(--ink-3); }
+
+body[data-theme="dark"] .client-card { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .client-card-name { color: var(--ink); }
+body[data-theme="dark"] .client-card-meta { color: var(--ink-3); }
+
+body[data-theme="dark"] .task-card { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .task-card-title { color: var(--ink); }
+body[data-theme="dark"] .task-card-meta { color: var(--ink-3); }
+
+body[data-theme="dark"] .empty,
+body[data-theme="dark"] .muted { color: var(--ink-3); }
+body[data-theme="dark"] .strong { color: var(--ink); }
+
+body[data-theme="dark"] .stat-tile { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .stat-tile-label { color: var(--ink-3); }
+body[data-theme="dark"] .stat-tile-value { color: var(--ink); }
+body[data-theme="dark"] .stat-tile-sub { color: var(--ink-3); }
+
+body[data-theme="dark"] .timeline-row { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .timeline-title { color: var(--ink); }
+body[data-theme="dark"] .timeline-meta,
+body[data-theme="dark"] .timeline-body { color: var(--ink-2); }
+body[data-theme="dark"] .timeline-empty { color: var(--ink-3); }
+
+body[data-theme="dark"] .form-group label { color: var(--ink-2); }
+body[data-theme="dark"] .form-help { color: var(--ink-3); }
+
+body[data-theme="dark"] .btn-ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+body[data-theme="dark"] .btn-ghost:hover { background: rgba(255,255,255,0.06); }
+
+body[data-theme="dark"] .alert { background: var(--bg-3); color: var(--ink); border-color: var(--line); }
+body[data-theme="dark"] .alert-info { background: rgba(42,58,115,0.25); color: var(--ink); border-color: var(--navy-3); }
+body[data-theme="dark"] .alert-success { background: rgba(70,140,80,0.20); color: var(--ink); border-color: #4a8a4a; }
+body[data-theme="dark"] .alert-warn { background: rgba(220,150,80,0.20); color: var(--ink); border-color: #c8895a; }
+body[data-theme="dark"] .alert-error { background: rgba(220,80,80,0.20); color: var(--ink); border-color: #c85a5a; }
+
+body[data-theme="dark"] .dropdown { background: var(--bg-2); border-color: var(--line); color: var(--ink); }
+body[data-theme="dark"] .dropdown-item { color: var(--ink); }
+body[data-theme="dark"] .dropdown-item:hover { background: rgba(255,255,255,0.06); }
+body[data-theme="dark"] .dropdown-divider { background: var(--line); }
+body[data-theme="dark"] .dropdown-header { color: var(--ink-3); }
+
+body[data-theme="dark"] .badge-gold { background: var(--gold-soft); color: var(--gold); }
+body[data-theme="dark"] .badge-navy { background: rgba(42,58,115,0.25); color: #b3c2ee; }
+body[data-theme="dark"] .badge-green { background: rgba(70,140,80,0.20); color: #a5d6a5; }
+body[data-theme="dark"] .badge-red { background: rgba(220,80,80,0.20); color: #ffb3b3; }
+body[data-theme="dark"] .badge-gray { background: var(--bg-3); color: var(--ink-3); }
+body[data-theme="dark"] .badge-yellow { background: rgba(220,180,80,0.20); color: #ffe28a; }
+
+body[data-theme="dark"] .code,
+body[data-theme="dark"] code,
+body[data-theme="dark"] pre { background: var(--bg-3); color: var(--ink); border: 1px solid var(--line); }
+body[data-theme="dark"] .dje-pub-item { background: var(--bg-2); border-color: var(--line); }
+body[data-theme="dark"] .dje-pub-title { color: var(--ink); }
+body[data-theme="dark"] .dje-pub-meta { color: var(--ink-3); }
+body[data-theme="dark"] .dje-pub-text { color: var(--ink-2); }
 body[data-theme="dark"] .kanban-col-header.week { background: rgba(80,140,220,0.18); color: #99c2ff; }
 body[data-theme="dark"] .kanban-track { background: rgba(255,255,255,0.04); }
 body[data-theme="dark"] .toast { box-shadow: var(--shadow); }

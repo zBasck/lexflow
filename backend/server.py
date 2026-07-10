@@ -683,11 +683,15 @@ def dispatch(handler, method, path):
 
 
     # Pattern especifico para DELETE /api/cases/{id}/folder (passa folder_id via body)
-    m = re.match(r"^/api/cases/([\w\-]+)/folder$", path)
+    # Aceita trailing slash opcional
+    m = re.match(r"^/api/cases/([\w\-]+)/folder/?$", path)
     if m and method == "DELETE":
         fn = ROUTES.get(("DELETE", "/api/cases/{id}/folder"))
         if fn:
-            body = read_body(handler)
+            try:
+                body = read_body(handler)
+            except Exception:
+                body = {}
             return fn(handler, m.group(1), body)
 
     # Pattern generico /api/{resource}/{id}/{action} (3 segmentos)
