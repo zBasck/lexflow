@@ -967,7 +967,17 @@
                     } catch (e) { toast('Erro: ' + e.message, 'err'); }
                   }, title: 'Buscar publicacoes deste processo no Comunica PJE' }, '🔄 Sync PJE'),
                 h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento'),
-                h('button', { class: 'btn btn-sm', id: 'btn-monitor-case', onclick: onToggleMonitor, style: 'background:#f1f5f9;color:#1e293b;border:1px solid #cbd5e1' }, '🔔 Monitorar...')
+                h('label', { class: 'switch', title: 'Ativar/pausar monitoramento deste caso no Comunica PJE', style: 'margin-left:8px;vertical-align:middle' },
+                  h('input', { type: 'checkbox', id: 'case-monitor-toggle', checked: true, onchange: async (e) => {
+                    const newStatus = e.target.checked ? 'active' : 'paused';
+                    try {
+                      await API.req('POST', '/api/cases/' + cid + '/monitor', { status: newStatus });
+                      toast('Monitoramento ' + (e.target.checked ? 'ATIVADO' : 'PAUSADO'), 'success');
+                    } catch (err) { toast('Erro: ' + err.message, 'err'); e.target.checked = !e.target.checked; }
+                  } }),
+                  h('span', { class: 'switch-slider' })
+                ),
+                h('span', { class: 'muted small', style: 'margin-left:4px;vertical-align:middle' }, 'Monitorar')
               )
             ),
             updates.length === 0 ? h('div', { class: 'empty' }, h('p', null, 'Nenhum andamento registrado'))
@@ -2784,6 +2794,108 @@
     document.body.appendChild(overlay);
   }
 
+  async function openIntegrations() {
+    if (!isSocio()) { toast('Apenas socios podem gerenciar integracoes', 'error'); return; }
+    let integ = [];
+    try { integ = (await API.get('/api/integrations')).integrations || []; } catch(e) {}
+    const byProv = {};
+    for (const i of integ) byProv[i.provider] = i;
+    const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } },
+      h('div', { class: 'modal-card modal-settings' },
+        h('div', { class: 'modal-header' },
+          h('h2', null, '\u{1F517} Integracoes de Sistemas'),
+          h('button', { class: 'modal-close', onclick: () => overlay.remove() }, '\u00d7')
+        ),
+        h('div', { class: 'modal-body' },
+          h('div', { class: 'modal-info' },
+            h('strong', null, 'PJE TJRJ 1G '),
+            h('a', { href: 'https://tjrj.pje.jus.br/1g', target: '_blank', rel: 'noopener' }, 'https://tjrj.pje.jus.br/1g'),
+            ' - exige login + codigo de 2 fatores (TOTP). Cadastre o username e cole o ',
+            h('strong', null, 'codigo do autenticador (base32)'),
+            '. O sistema gera o codigo TOTP automaticamente.'
+          ),
+          h('div', { class: 'form-row' },
+            h('label', null, 'Username (PJE TJRJ)'),
+            h('input', { type: 'text', id: 'pje-username', value: byProv['pje_tjrj'] ? byProv['pje_tjrj'].username : '', placeholder: 'login do PJE' })
+          ),
+          h('div', { class: 'form-row' },
+            h('label', null, 'Secret 2FA (base32 - codigo do autenticador)'),
+            h('input', { type: 'text', id: 'pje-secret', value: '', placeholder: 'cole aqui o codigo do Google Authenticator / Authy' })
+          ),
+          h('div', { class: 'form-row' },
+            h('button', { class: 'btn-primary', onclick: async () => {
+              const u = document.getElementById('pje-username').value.trim();
+              const s = document.getElementById('pje-secret').value.trim();
+              if (!u) { toast('Informe o username', 'error'); return; }
+              try {
+                await API.post('/api/integrations/pje-tjrj', { username: u, secret_2fa: s || '' });
+                toast('Integracao PJE TJRJ salva', 'success');
+                overlay.remove(); openIntegrations();
+              } catch (e) { toast('Erro: ' + e.message, 'error'); }
+            }}, byProv['pje_tjrj'] ? 'Atualizar' : 'Conectar PJE'),
+            byProv['pje_tjrj'] ? h('button', { class: 'btn-secondary', onclick: async () => {
+              if (!confirm('Desconectar PJE TJRJ?')) return;
+              await API.req('DELETE', '/api/integrations/pje-tjrj', {});
+              toast('Desconectado', 'success'); overlay.remove(); openIntegrations();
+            }}, 'Desconectar') : null
+          ),
+          byProv['pje_tjrj'] ? h('button', { class: 'btn-secondary', onclick: async () => {
+            try {
+              const r = await API.req('POST', '/api/integrations/pje-tjrj/totp', {});
+              document.getElementById('pje-totp-code').textContent = r.code + ' (expira em ' + r.window_seconds + 's)';
+              toast('Codigo TOTP: ' + r.code, 'success');
+            } catch (e) { toast('Erro: ' + e.message, 'error'); }
+          }}, 'Gerar codigo TOTP agora') : null,
+          byProv['pje_tjrj'] ? h('div', { class: 'form-row' },
+            h('label', null, 'Codigo TOTP atual (atualiza a cada 30s)'),
+            h('div', { id: 'pje-totp-code', class: 'mono' }, '------')
+          ) : null,
+          h('hr'),
+          h('div', { class: 'modal-info' },
+            h('strong', null, 'eProc TJRJ '),
+            h('a', { href: 'https://eproc1g.tjrj.jus.br/eproc', target: '_blank', rel: 'noopener' }, 'https://eproc1g.tjrj.jus.br/eproc'),
+            ' - exige apenas login (sem 2 fatores).'
+          ),
+          h('div', { class: 'form-row' },
+            h('label', null, 'Username (eProc TJRJ)'),
+            h('input', { type: 'text', id: 'eproc-username', value: byProv['eproc_tjrj'] ? byProv['eproc_tjrj'].username : '', placeholder: 'login do eProc' })
+          ),
+          h('div', { class: 'form-row' },
+            h('button', { class: 'btn-primary', onclick: async () => {
+              const u = document.getElementById('eproc-username').value.trim();
+              if (!u) { toast('Informe o username', 'error'); return; }
+              try {
+                await API.post('/api/integrations/eproc-tjrj', { username: u });
+                toast('Integracao eProc TJRJ salva', 'success');
+                overlay.remove(); openIntegrations();
+              } catch (e) { toast('Erro: ' + e.message, 'error'); }
+            }}, byProv['eproc_tjrj'] ? 'Atualizar' : 'Conectar eProc'),
+            byProv['eproc_tjrj'] ? h('button', { class: 'btn-secondary', onclick: async () => {
+              if (!confirm('Desconectar eProc TJRJ?')) return;
+              await API.req('DELETE', '/api/integrations/eproc-tjrj', {});
+              toast('Desconectado', 'success'); overlay.remove(); openIntegrations();
+            }}, 'Desconectar') : null
+          )
+        ),
+        h('div', { class: 'modal-footer' },
+          h('button', { class: 'btn-secondary', onclick: () => overlay.remove() }, 'Fechar')
+        )
+      )
+    );
+    document.body.appendChild(overlay);
+    if (byProv['pje_tjrj']) {
+      const tick = async () => {
+        try {
+          const r = await API.req('POST', '/api/integrations/pje-tjrj/totp', {});
+          const el = document.getElementById('pje-totp-code');
+          if (el) el.textContent = r.code + ' (expira em ' + r.window_seconds + 's)';
+        } catch (e) {}
+      };
+      tick();
+      overlay._totp_timer = setInterval(tick, 10000);
+    }
+  }
+
   function openMonitoringSettings() {
     const overlay = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } },
       h('div', { class: 'modal-card modal-settings' },
@@ -2820,7 +2932,7 @@
         ),
         h('div', { class: 'modal-footer' },
           h('button', { class: 'btn-secondary', onclick: () => close() }, 'Cancelar'),
-          h('button', { class: 'btn-secondary', onclick: () => { const m = document.getElementById('modal-mon-settings'); if (m && m.parentNode) m.parentNode.removeChild(m); goTo('monitoring'); } }, 'Ir para Monitoramento'),
+          h('button', { class: 'btn-secondary', onclick: () => { const m = document.getElementById('modal-mon-settings'); if (m && m.parentNode) m.parentNode.removeChild(m); go('monitoring'); } }, 'Ir para Monitoramento'),
           h('button', { class: 'btn-primary', onclick: async () => { await saveMonSettings(); } }, 'Salvar')
         )
       )

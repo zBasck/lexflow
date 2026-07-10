@@ -211,10 +211,12 @@ def init_db():
             next_deadline TEXT,
             responsible_id TEXT,
             tags TEXT,
+            monitoring_active INTEGER DEFAULT 1,
             created_at TEXT NOT NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL,
             FOREIGN KEY(responsible_id) REFERENCES users(id) ON DELETE SET NULL
         )""",
+        """ALTER TABLE cases ADD COLUMN monitoring_active INTEGER DEFAULT 1""",
         """CREATE TABLE IF NOT EXISTS case_updates (
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -267,6 +269,17 @@ def init_db():
             created_at TEXT NOT NULL,
             FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE SET NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS integrations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            provider TEXT NOT NULL,
+            username TEXT,
+            secret_2fa TEXT,
+            connected_at TEXT,
+            last_login_at TEXT,
+            status TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
         )""",
         """CREATE TABLE IF NOT EXISTS case_folders (
             id TEXT PRIMARY KEY,
@@ -625,11 +638,17 @@ def dispatch(handler, method, path):
     # Try static match first
     fn = ROUTES.get((method, path))
     if fn:
+        # FIX 1: rotas multipart NAO devem ter o body lido pelo dispatch
+        # (o rfile seria consumido e o _parse_multipart do handler falharia)
+        ctype = (handler.headers.get("Content-Type") or "").lower()
+        is_multipart = "multipart/form-data" in ctype
         try:
             nparams = len(inspect.signature(fn).parameters)
         except Exception:
             nparams = 1
         if nparams >= 2:
+            if is_multipart:
+                return fn(handler, None)
             if method in ("POST", "PUT", "PATCH"):
                 body = read_body(handler)
             else:
@@ -825,6 +844,160 @@ def users_set_photo(handler, uid):
     conn.close()
     return json_response(handler, 200, {"ok": True, "photo": rel})
 
+
+# ---------- INTEGRACOES (PJE TJRJ, eproc TJRJ) ----------
+def integrations_list(handler):
+    if not require_auth(handler):
+        return
+    u = handler.user
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, provider, username, status, connected_at, last_login_at FROM integrations WHERE user_id=? ORDER BY provider",
+        (u["id"],),
+    ).fetchall()
+    conn.close()
+    return json_response(handler, 200, {"integrations": [dict(r) for r in rows]})
+
+
+def integrations_connect_pje(handler, body):
+    """POST /api/integrations/pje-tjrj - cadastra username + secret TOTP (base32)."""
+    if not require_auth(handler):
+        return
+    body = body if body is not None else read_body(handler)
+    body = body or {}
+    u = handler.user
+    username = (body.get("username") or "").strip()
+    secret = (body.get("secret_2fa") or "").strip().upper().replace(" ", "")
+    if not username:
+        return json_response(handler, 400, {"error": "username obrigatorio"})
+    if secret and not re.fullmatch(r"[A-Z2-7]{16,}", secret):
+        return json_response(handler, 400, {"error": "secret 2FA invalido (esperado base32 16+ chars)"})
+    conn = db()
+    existing = conn.execute(
+        "SELECT id FROM integrations WHERE user_id=? AND provider=?", (u["id"], "pje_tjrj")
+    ).fetchone()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    if existing:
+        if secret:
+            conn.execute(
+                "UPDATE integrations SET username=?, secret_2fa=?, status='connected', connected_at=?, last_login_at=? WHERE id=?",
+                (username, secret, now, now, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE integrations SET username=?, status='connected', last_login_at=? WHERE id=?",
+                (username, now, existing["id"]),
+            )
+        iid = existing["id"]
+    else:
+        if not secret:
+            conn.close()
+            return json_response(handler, 400, {"error": "secret 2FA obrigatorio no primeiro cadastro"})
+        iid = secrets.token_hex(8)
+        conn.execute(
+            "INSERT INTO integrations(id, user_id, provider, username, secret_2fa, connected_at, last_login_at, status) VALUES (?,?,?,?,?,?,?,?)",
+            (iid, u["id"], "pje_tjrj", username, secret, now, now, "connected"),
+        )
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True, "id": iid, "provider": "pje_tjrj", "status": "connected"})
+
+
+def integrations_connect_eproc(handler, body):
+    """POST /api/integrations/eproc-tjrj - sem 2FA, so username."""
+    if not require_auth(handler):
+        return
+    body = body if body is not None else read_body(handler)
+    body = body or {}
+    u = handler.user
+    username = (body.get("username") or "").strip()
+    if not username:
+        return json_response(handler, 400, {"error": "username obrigatorio"})
+    conn = db()
+    existing = conn.execute(
+        "SELECT id FROM integrations WHERE user_id=? AND provider=?", (u["id"], "eproc_tjrj")
+    ).fetchone()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    if existing:
+        conn.execute(
+            "UPDATE integrations SET username=?, secret_2fa=NULL, status='connected', connected_at=?, last_login_at=? WHERE id=?",
+            (username, now, now, existing["id"]),
+        )
+        iid = existing["id"]
+    else:
+        iid = secrets.token_hex(8)
+        conn.execute(
+            "INSERT INTO integrations(id, user_id, provider, username, secret_2fa, connected_at, last_login_at, status) VALUES (?,?,?,?,?,?,?,?)",
+            (iid, u["id"], "eproc_tjrj", username, None, now, now, "connected"),
+        )
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True, "id": iid, "provider": "eproc_tjrj", "status": "connected"})
+
+
+def integrations_totp_code(handler, body):
+    """POST /api/integrations/pje-tjrj/totp - gera o codigo TOTP atual."""
+    if not require_auth(handler):
+        return
+    body = body if body is not None else read_body(handler)
+    body = body or {}
+    try:
+        import base64, hashlib, hmac, struct, time as _t
+        secret = (body.get("secret_2fa") or "").strip().upper().replace(" ", "")
+        if not secret:
+            conn = db()
+            row = conn.execute(
+                "SELECT secret_2fa FROM integrations WHERE user_id=? AND provider=?",
+                (handler.user["id"], "pje_tjrj"),
+            ).fetchone()
+            conn.close()
+            if not row or not row["secret_2fa"]:
+                return json_response(handler, 400, {"error": "sem secret 2FA cadastrado"})
+            secret = row["secret_2fa"]
+        pad = "=" * ((8 - len(secret) % 8) % 8)
+        key = base64.b32decode(secret + pad)
+        counter = int(_t.time() // 30)
+        msg = struct.pack(">Q", counter)
+        h = hmac.new(key, msg, hashlib.sha1).digest()
+        o = h[-1] & 0x0F
+        code = (struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000
+        return json_response(handler, 200, {
+            "ok": True,
+            "code": f"{code:06d}",
+            "window_seconds": int(30 - (_t.time() % 30)),
+        })
+    except Exception as e:
+        return json_response(handler, 500, {"error": f"falha ao gerar TOTP: {e}"})
+
+
+def integrations_disconnect_pje(handler):
+    if not require_auth(handler):
+        return
+    conn = db()
+    conn.execute("DELETE FROM integrations WHERE user_id=? AND provider=?",
+                 (handler.user["id"], "pje_tjrj"))
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True})
+
+
+def integrations_disconnect_eproc(handler):
+    if not require_auth(handler):
+        return
+    conn = db()
+    conn.execute("DELETE FROM integrations WHERE user_id=? AND provider=?",
+                 (handler.user["id"], "eproc_tjrj"))
+    conn.commit()
+    conn.close()
+    return json_response(handler, 200, {"ok": True})
+
+
+route("GET",    "/api/integrations",                 integrations_list)
+route("POST",   "/api/integrations/pje-tjrj",        integrations_connect_pje)
+route("POST",   "/api/integrations/eproc-tjrj",      integrations_connect_eproc)
+route("POST",   "/api/integrations/pje-tjrj/totp",   integrations_totp_code)
+route("DELETE", "/api/integrations/pje-tjrj",        integrations_disconnect_pje)
+route("DELETE", "/api/integrations/eproc-tjrj",      integrations_disconnect_eproc)
 
 route("POST", "/api/upload", upload_file)
 route("POST", "/api/users/{id}/photo", users_set_photo)
@@ -1071,7 +1244,30 @@ def make_create(table, fields):
             values.append(v)
         cols.append("created_at")
         values.append(now)
+        # FIX 3: casos novos ja entram com monitoramento ativo por padrao
+        if table == "cases" and "monitoring_active" not in body:
+            cols.append("monitoring_active")
+            values.append(1)
         conn = db()
+        # FIX 7b: check de CNJ duplicado (agora com conn aberta)
+        if table == "cases" and "code" in cols:
+            try:
+                ci = cols.index("code")
+                code_val = values[ci]
+            except Exception:
+                code_val = None
+            if code_val and str(code_val).strip():
+                dup = conn.execute(
+                    "SELECT id, title FROM cases WHERE code = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
+                    (str(code_val).strip(),),
+                ).fetchone()
+                if dup:
+                    conn.close()
+                    return json_response(handler, 409, {
+                        "error": "Ja existe um caso com este CNJ.",
+                        "existing_case_id": dup[0],
+                        "existing_case_title": dup[1],
+                    })
         try:
             conn.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join(['?']*len(values))})", values)
             audit(conn, user["id"], "create", table, rid, after=body)

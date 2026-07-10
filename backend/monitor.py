@@ -718,10 +718,10 @@ class MonitoringWorker(threading.Thread):
             try:
                 conn.execute(
                     "INSERT INTO cases(id, code, title, court, status, area, responsible_id, client_id,"
-                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " monitoring_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         case_id, cnj, title, tribunal_sigla, "ativo", "monitoramento",
-                        user_id, client_id, now, now,
+                        user_id, client_id, 1, now, now,
                     ),
                 )
             except Exception as _exc:

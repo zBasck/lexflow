@@ -1,4 +1,54 @@
 /* =============== LEXFLOW - ESTILO PREMIUM =============== */
+
+/* =============== SWITCH TOGGLE =============== */
+.switch { position: relative; display: inline-block; width: 52px; height: 28px; margin-right: 10px; vertical-align: middle; }
+.switch input { display: none; }
+.switch-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #cbd5e1; border-radius: 28px; transition: 0.3s; box-shadow: inset 0 1px 3px rgba(0,0,0,0.15); }
+.switch-slider::before { content: ""; position: absolute; height: 22px; width: 22px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+.switch input:checked + .switch-slider { background: #1f4068; }
+.switch input:checked + .switch-slider::before { transform: translateX(24px); }
+body[data-theme="dark"] .switch-slider { background: #475569; }
+body[data-theme="dark"] .switch input:checked + .switch-slider { background: #4f7cb8; }
+
+/* =============== DARK MODE CARDS EXTRAS =============== */
+body[data-theme="dark"] .kpi,
+body[data-theme="dark"] .stat-tile,
+body[data-theme="dark"] .card-stat,
+body[data-theme="dark"] .metric-card { background: #1e293b !important; color: #e2e8f0 !important; }
+body[data-theme="dark"] .kpi-label,
+body[data-theme="dark"] .kpi-value,
+body[data-theme="dark"] .stat-label,
+body[data-theme="dark"] .stat-value,
+body[data-theme="dark"] .metric-label,
+body[data-theme="dark"] .metric-value { color: #e2e8f0 !important; }
+body[data-theme="dark"] .area-bar-row,
+body[data-theme="dark"] .area-bar-track { background: #334155 !important; }
+body[data-theme="dark"] .area-bar-fill { filter: brightness(1.15); }
+body[data-theme="dark"] .modal-body { background: #1e293b; color: #e2e8f0; }
+body[data-theme="dark"] .modal-card { background: #1e293b; color: #e2e8f0; }
+body[data-theme="dark"] .form-group input,
+body[data-theme="dark"] .form-group select,
+body[data-theme="dark"] .form-group textarea,
+body[data-theme="dark"] .form-row input,
+body[data-theme="dark"] .form-row select { background: #0f172a; color: #e2e8f0; border-color: #475569; }
+body[data-theme="dark"] .table th,
+body[data-theme="dark"] .table td { background: #1e293b; color: #e2e8f0; border-color: #334155; }
+body[data-theme="dark"] .list-item { background: #1e293b; color: #e2e8f0; }
+body[data-theme="dark"] .empty,
+body[data-theme="dark"] .muted { color: #94a3b8; }
+body[data-theme="dark"] .timeline-row,
+body[data-theme="dark"] .timeline-item { background: #1e293b; border-color: #334155; }
+body[data-theme="dark"] .case-card,
+body[data-theme="dark"] .client-card,
+body[data-theme="dark"] .task-card { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+body[data-theme="dark"] .btn-ghost { background: #334155; color: #e2e8f0; border-color: #475569; }
+body[data-theme="dark"] .btn-secondary { background: #334155; color: #e2e8f0; }
+body[data-theme="dark"] .dje-pub-item { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+
+/* =============== TOTP CODE =============== */
+.mono { font-family: 'Courier New', monospace; font-size: 1.4em; font-weight: 700; color: #1f4068; padding: 10px; background: #f1f5f9; border-radius: 6px; letter-spacing: 4px; text-align: center; }
+body[data-theme="dark"] .mono { background: #0f172a; color: #4f7cb8; }
+
 :root {
   --navy: #0F1B3D;
   --navy-2: #1a2756;
