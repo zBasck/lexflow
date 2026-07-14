@@ -246,8 +246,14 @@ def scraper_pje_for_oab(numero_oab, uf):
 
 
 class MonitoringWorker:
-    def __init__(self, interval_minutes=60):
-        self.interval = interval_minutes * 60
+    def __init__(self, db_path=None, get_api_key_fn=None, interval_seconds=2160):
+        # Aceita tanto (interval_minutes=60) quanto (db_path=..., interval_seconds=...)
+        # para retro-compatibilidade com o que o server.py envia hoje.
+        if db_path is None and interval_seconds == 2160:
+            # Chamada antiga: MonitoringWorker(interval_minutes=60)
+            # nada a fazer, defaults ja estao certos
+            pass
+        self.interval = max(15, int(interval_seconds))
         self._stop = threading.Event()
         self._thread = None
 
