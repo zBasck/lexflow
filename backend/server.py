@@ -1215,20 +1215,7 @@ def make_create(table, fields):
                 return json_response(handler, 400, {"error": "Título do caso é obrigatório."})
             if not (body.get("area") or "").strip():
                 return json_response(handler, 400, {"error": "Área jurídica é obrigatória."})
-            # Bloqueia duplicacao de caso pelo codigo (CNJ)
-            if body.get("code") and str(body["code"]).strip():
-                code_norm = str(body["code"]).strip()
-                dup = conn.execute(
-                    "SELECT id, title FROM cases WHERE code = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
-                    (code_norm,),
-                ).fetchone()
-                if dup:
-                    conn.close()
-                    return json_response(handler, 409, {
-                        "error": "Ja existe um caso com este CNJ.",
-                        "existing_case_id": dup[0],
-                        "existing_case_title": dup[1],
-                    })
+            # (check de CNJ duplicado movido para depois do conn = db())
         elif table == "tasks":
             if not (body.get("title") or "").strip():
                 return json_response(handler, 400, {"error": "Título da tarefa é obrigatório."})

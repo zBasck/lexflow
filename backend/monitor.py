@@ -347,9 +347,10 @@ def _auto_create_case(conn, pub, responsible_id, system="pje"):
     cnj_fmt, cnj_digits = normalize_cnj(pub.get("cnj",""))
     if not cnj_digits or len(cnj_digits) != 20:
         return None
-    row = conn.execute("SELECT id FROM cases WHERE code=? AND deleted_at IS NULL", (cnj_fmt,)).fetchone()
-    if row:
-        return row["id"]
+    # Tenta achar caso existente em ambos formatos
+    existing = _find_case_by_cnj(conn, cnj_fmt, responsible_id)
+    if existing:
+        return existing
     cid = f"case-{int(time.time()*1000)}-{hash(cnj_fmt)%1000000:06d}"
     now = datetime.utcnow().isoformat()
     try:
@@ -397,12 +398,32 @@ def _insert_dedupe_pubs_for_case(conn, case_id, pubs):
 
 
 def _find_case_by_cnj(conn, cnj_fmt, responsible_id=None):
-    row = conn.execute("""
-        SELECT id FROM cases
-        WHERE code=? AND deleted_at IS NULL
-        ORDER BY (responsible_id = ?) DESC LIMIT 1
-    """, (cnj_fmt, responsible_id or "")).fetchone()
-    return row["id"] if row else None
+    # Aceita tanto CNJ formatado ("0813328-75.2025.8.19.0068") quanto soh digitos
+    cnj_fmt_n, cnj_digits = normalize_cnj(cnj_fmt or "")
+    candidates = [cnj_fmt_n]
+    if cnj_digits and len(cnj_digits) == 20 and cnj_digits not in candidates:
+        candidates.append(cnj_digits)
+    if cnj_digits and len(cnj_digits) == 20:
+        formatted = f"{cnj_digits[0:7]}-{cnj_digits[7:9]}.{cnj_digits[9:13]}.{cnj_digits[13]}.{cnj_digits[14:16]}.{cnj_digits[16:20]}"
+        if formatted not in candidates:
+            candidates.append(formatted)
+    for c in candidates:
+        if not c:
+            continue
+        try:
+            row = conn.execute("""
+                SELECT id FROM cases
+                WHERE code=? AND (deleted_at IS NULL OR deleted_at = '')
+                ORDER BY (responsible_id = ?) DESC LIMIT 1
+            """, (c, responsible_id or "")).fetchone()
+        except Exception:
+            return None
+        if row:
+            try:
+                return row["id"]
+            except (TypeError, KeyError, IndexError):
+                return row[0] if len(row) > 0 else None
+    return None
 
 
 def check_oab(oab_raw, uf, responsible_id=None):
