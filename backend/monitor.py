@@ -313,6 +313,35 @@ class MonitoringWorker:
         finally:
             conn.close()
 
+    def _find_case_by_cnj(self, cnj_fmt, responsible_id=None):
+        """Wrapper de _find_case_by_cnj para o handler monitor_oab_search."""
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _find_case_by_cnj(conn, cnj_fmt, responsible_id)
+        finally:
+            conn.close()
+
+    def _auto_create_case(self, pub, responsible_id, system="pje"):
+        """Wrapper de _auto_create_case para o handler monitor_oab_search."""
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _auto_create_case(conn, pub, responsible_id, system)
+        finally:
+            conn.close()
+
+    def _insert_dedupe_pubs_for_case(self, case_id, pubs):
+        """Wrapper de _insert_dedupe_pubs_for_case para o handler monitor_oab_search."""
+        if not case_id:
+            return 0
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _insert_dedupe_pubs_for_case(conn, case_id, pubs)
+        finally:
+            conn.close()
+
 
 def _auto_create_case(conn, pub, responsible_id, system="pje"):
     cnj_fmt, cnj_digits = normalize_cnj(pub.get("cnj",""))
