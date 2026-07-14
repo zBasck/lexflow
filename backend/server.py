@@ -33,6 +33,14 @@ except Exception as _e:
     HAS_LLM = False
     sys.stderr.write(f"[server] llm module not loaded: {_e}\n")
 
+try:
+    import manager as _manager
+    HAS_MANAGER = True
+except Exception as _e:
+    _manager = None
+    HAS_MANAGER = False
+    sys.stderr.write(f"[server] manager module not loaded: {_e}\n")
+
 # Instância global do worker (iniciada no main)
 MONITOR_WORKER = {"instance": None}
 
@@ -2212,7 +2220,7 @@ def monitor_run_now(handler, case_id, body=None):
         cnj = (row["cnj"] or "").strip()
         if not cnj or not _monitor.normalize_cnj(cnj):
             return json_response(handler, 400, {"error": "caso sem CNJ valido cadastrado", "cnj": cnj})
-        cnj_fmt = _monitor.normalize_cnj(cnj)
+        cnj_fmt, _ = _monitor.normalize_cnj(cnj)
         # Determina UF: prioriza oab_uf do user, senao tenta extrair do CNJ
         oab_uf = (row["responsible_oab_uf"] or "").strip().upper()
         oab_num = ""
@@ -2693,7 +2701,13 @@ route("POST", "/api/llm/classify",              llm_classify)
 route("POST", "/api/llm/suggest",               llm_suggest)
 route("POST", "/api/llm/prioritize",            llm_prioritize)
 
-route("POST",   "/api/cases/{id}/folder",        case_folder_set)
+route("GET",    "/api/manager/sugestoes",          manager_list)
+route("POST",   "/api/manager/apply",                manager_apply)
+route("POST",   "/api/manager/dismiss",              manager_dismiss)
+route("GET",    "/api/manager/settings",             manager_get_settings)
+route("POST",   "/api/manager/settings",             manager_set_settings)
+route("POST",   "/api/manager/run",                  manager_run_now)
+route("POST",   "/api/cases/{id}/folder",            case_folder_set)
 route("DELETE", "/api/cases/{id}/folder",        case_folder_unset)
 route("GET",    "/api/cases/{id}/folder/files",  case_folder_list_files)
 route("POST",   "/api/cases/{id}/folder/read",   case_folder_read_file)
@@ -2814,6 +2828,52 @@ class LexFlowHandler(BaseHTTPRequestHandler):
 
 # ----------------------------- MAIN -----------------------------
 
+# ===================== GERENTE VIVO =====================
+def _require_mgr():
+    if not HAS_MANAGER:
+        return False
+    return True
+
+def manager_list(handler):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    return json_response(handler, 200, _manager.listar_sugestoes())
+
+def manager_apply(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    try: idx = int((body or {}).get("idx", -1))
+    except Exception: idx = -1
+    res = _manager.aplicar(idx)
+    return json_response(handler, 200 if res.get("ok") else 400, res)
+
+def manager_dismiss(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    try: idx = int((body or {}).get("idx", -1))
+    except Exception: idx = -1
+    res = _manager.dispensar(idx)
+    return json_response(handler, 200 if res.get("ok") else 400, res)
+
+def manager_get_settings(handler):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    return json_response(handler, 200, {"settings": _manager.get_settings()})
+
+def manager_set_settings(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    body = body or {}
+    cfg = _manager.set_settings(enabled=body.get("enabled"), interval_minutes=body.get("interval_minutes"))
+    return json_response(handler, 200, {"settings": cfg})
+
+def manager_run_now(handler, body=None):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    sugs = _manager.gerar_sugestoes()
+    return json_response(handler, 200, {"ok": True, "total": len(sugs), "sugestoes": sugs})
+
+# ===================== MAIN =====================
 def main():
     print("=" * 60)
     print("  LexFlow - Sistema de Gestao Juridica v2.1")
@@ -2834,6 +2894,16 @@ def main():
             sys.stderr.write(f"[server] nao foi possivel iniciar monitor: {_e}\n")
     else:
         print("  Monitor Datajud/DJE: OFF (modulo indisponivel)")
+
+    # Inicia o Gerente Vivo em background
+    if HAS_MANAGER:
+        try:
+            _manager.start()
+            print("  Gerente vivo: ON (gerando sugestoes a cada 60 min)")
+        except Exception as _e:
+            sys.stderr.write(f"[server] nao foi possivel iniciar gerente: {_e}\n")
+    else:
+        print("  Gerente vivo: OFF (modulo indisponivel)")
 
     print(f"  Banco de dados: {DB_PATH}")
     print(f"  Frontend:       {FRONTEND_DIR}")

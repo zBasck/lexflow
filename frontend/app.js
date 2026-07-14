@@ -192,6 +192,19 @@
     } catch (e) { /* handled by API */ }
   }
 
+  // Recarrega TUDO em background sem travar a UI atual.
+  // Usado depois de acoes demoradas (sync PJE, busca OAB, criar caso).
+  async function refreshInBackground() {
+    if (!S.token) return;
+    try { await loadAll(); } catch (e) {}
+  }
+
+  // Recarrega TUDO e re-renderiza. Use para voltar de uma aba.
+  async function softRefresh() {
+    await refreshInBackground();
+    try { render(); } catch (e) {}
+  }
+
   // ---------------- COMPONENTS ----------------
 
   function badge(text, type) {
@@ -915,7 +928,7 @@
         if (r.pubs_found > 0) {
           const nf = (r.new_cases || 0) > 0 ? `, ${r.new_cases} caso(s) criado(s)` : '';
           toast(`PJE: ${r.pubs_found} pub(s) encontrada(s), ${r.inserted} inserida(s)${nf}`, 'success');
-          render();
+          await softRefresh();
         } else {
           toast('PJE: nenhuma publicacao encontrada para este CNJ. Pode ser que o caso nao tenha movimentacoes recentes ou o site retornou vazio.', 'warning');
         }
@@ -2090,6 +2103,9 @@
     try { settings = await API.get('/api/settings'); } catch (e) {}
     const set = settings || {};
 
+    // Carregar valores do gerente vivo
+    setTimeout(() => { refreshManager().catch(() => {}); }, 0);
+
     // Carregar valores do monitoramento no card de Configuracoes
     setTimeout(() => {
       API.req('GET', '/api/monitoring/settings').then(s => {
@@ -2325,6 +2341,42 @@
               });
           } }, '🧪 Testar Mistral'),
           h('a', { class: 'btn btn-ghost', href: 'https://ollama.com/download', target: '_blank' }, '📥 Instalar Ollama')
+        )
+      ),
+      h('div', { class: 'card' },
+        h('div', { class: 'card-header' },
+          h('h3', null, '🧠 Gerente vivo (Nivel 1+2)'),
+          h('div', { class: 'flex gap-2' },
+            h('span', { id: 'manager-status-badge', class: 'badge badge-neutral' }, 'verificando...'),
+            h('button', { class: 'btn btn-sm btn-ghost', onclick: refreshManager }, '🔄 Verificar agora')
+          )
+        ),
+        h('div', { class: 'card-body' },
+          h('div', { class: 'mb-2' },
+            h('label', null, 'Intervalo de verificacao'),
+            h('select', { id: 'manager-interval', class: 'form-input', onchange: saveManagerSettings },
+              h('option', { value: '15' }, 'A cada 15 min'),
+              h('option', { value: '30' }, 'A cada 30 min'),
+              h('option', { value: '60', selected: true }, 'A cada 1 hora (padrao)'),
+              h('option', { value: '180' }, 'A cada 3 horas'),
+              h('option', { value: '360' }, 'A cada 6 horas'),
+              h('option', { value: '720' }, 'A cada 12 horas'),
+              h('option', { value: '1440' }, 'A cada 24 horas')
+            )
+          ),
+          h('div', { class: 'mb-2' },
+            h('label', { class: 'switch-label' },
+              h('input', { type: 'checkbox', id: 'manager-enabled', onchange: saveManagerSettings }),
+              h('span', null, ' Gerente ATIVO')
+            )
+          ),
+          h('div', { id: 'manager-sugestoes', class: 'manager-sugestoes' },
+            h('p', { class: 'sub' }, 'Nenhuma sugestao ainda. Aperte "Verificar agora" para gerar.')
+          ),
+          h('div', { class: 'mt-2' },
+            h('button', { class: 'btn btn-primary btn-sm', onclick: runManagerNow }, '▶ Rodar agora'),
+            h('span', { id: 'manager-last-run', class: 'sub', style: { marginLeft: '12px' } }, '')
+          )
         )
       ),
       h('div', { class: 'card-header' }, h('h3', null, '🔔 Monitoramento (Comunica PJE)')),
@@ -3044,6 +3096,90 @@
       tick();
       overlay._totp_timer = setInterval(tick, 10000);
     }
+  }
+
+  // ----- GERENTE VIVO -----
+  async function refreshManager() {
+    try {
+      const r = await API.get('/api/manager/sugestoes');
+      renderManager(r);
+    } catch (err) {
+      const badge = document.getElementById('manager-status-badge');
+      if (badge) { badge.textContent = 'erro'; badge.className = 'badge badge-red'; }
+    }
+  }
+
+  function renderManager(r) {
+    const badge = document.getElementById('manager-status-badge');
+    const enInput = document.getElementById('manager-enabled');
+    const intervalSel = document.getElementById('manager-interval');
+    const list = document.getElementById('manager-sugestoes');
+    const lastRun = document.getElementById('manager-last-run');
+    if (!badge || !list) return;
+    const cfg = (r && r.settings) || {};
+    if (enInput) enInput.checked = cfg.enabled !== false;
+    if (intervalSel) intervalSel.value = String(cfg.interval_minutes || 60);
+    badge.textContent = cfg.enabled !== false ? 'ATIVO' : 'DESLIGADO';
+    badge.className = 'badge ' + (cfg.enabled !== false ? 'badge-green' : 'badge-red');
+    if (r && r.last_run) {
+      lastRun.textContent = 'Ultima atualizacao: ' + new Date(r.last_run).toLocaleString('pt-BR');
+    }
+    const sugs = (r && r.sugestoes) || [];
+    if (!sugs.length) {
+      list.innerHTML = '<p class="sub">Nenhuma sugestao agora. O escritorio esta em dia!</p>';
+      return;
+    }
+    list.innerHTML = '';
+    sugs.forEach((s, idx) => {
+      const div = document.createElement('div');
+      div.className = 'manager-item prio-' + s.prioridade;
+      div.innerHTML =
+        '<div class="manager-info">' +
+          '<div class="manager-title">' + escapeHTML(s.titulo || s.tipo) + '</div>' +
+          '<div class="manager-desc">' + escapeHTML(s.descricao || '') + '</div>' +
+        '</div>' +
+        '<div class="flex gap-1">' +
+          '<button class="btn btn-sm btn-primary" data-apply="' + idx + '">Aplicar</button>' +
+          '<button class="btn btn-sm btn-ghost" data-dismiss="' + idx + '">Dispensar</button>' +
+        '</div>';
+      list.appendChild(div);
+    });
+    list.querySelectorAll('[data-apply]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const idx = parseInt(b.getAttribute('data-apply'), 10);
+        try { await API.req('POST', '/api/manager/apply', { idx }); await refreshManager(); toast('Sugestao aplicada', 'success'); }
+        catch (e) { toast('Erro: ' + e.message, 'error'); }
+      });
+    });
+    list.querySelectorAll('[data-dismiss]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const idx = parseInt(b.getAttribute('data-dismiss'), 10);
+        try { await API.req('POST', '/api/manager/dismiss', { idx }); await refreshManager(); }
+        catch (e) { toast('Erro: ' + e.message, 'error'); }
+      });
+    });
+  }
+
+  async function saveManagerSettings() {
+    const enInput = document.getElementById('manager-enabled');
+    const intervalSel = document.getElementById('manager-interval');
+    if (!enInput || !intervalSel) return;
+    try {
+      await API.req('POST', '/api/manager/settings', {
+        enabled: enInput.checked,
+        interval_minutes: parseInt(intervalSel.value, 10)
+      });
+      await refreshManager();
+      toast('Configuracao do gerente salva', 'success');
+    } catch (e) { toast('Erro: ' + e.message, 'error'); }
+  }
+
+  async function runManagerNow() {
+    try {
+      const r = await API.req('POST', '/api/manager/run', {});
+      renderManager({ sugestoes: r.sugestoes, settings: { enabled: true, interval_minutes: 60 }, last_run: new Date().toISOString() });
+      toast(r.total + ' sugestoes geradas', 'success');
+    } catch (e) { toast('Erro: ' + e.message, 'error'); }
   }
 
   function openMonitoringSettings() {

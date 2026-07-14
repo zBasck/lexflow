@@ -86,3 +86,11 @@ def prioritize_tasks(open_tasks):
               "(mais urgente primeiro). Responda APENAS com a lista numerada na nova ordem.\n\n"
               f"{items}\n\nNova ordem:")
     return generate(prompt, system=SYSTEM_PT, max_tokens=200)
+
+
+# Aliases para o manager.py
+def status():
+    return {"available": is_available(), "models": list_models()}
+
+def complete(prompt, model=None, max_tokens=2000):
+    return generate(prompt, model=model, max_tokens=max_tokens)

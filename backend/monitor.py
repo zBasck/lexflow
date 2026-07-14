@@ -593,6 +593,44 @@ class MonitoringWorker:
             conn.close()
 
 
+
+# Mapeamento de classe CNJ -> area juridica
+_AREA_MAP = [
+    ("fiscal", "Tributario"),
+    ("tribut", "Tributario"),
+    ("consumo", "Consumidor"),
+    ("consumid", "Consumidor"),
+    ("familia", "Familia"),
+    ("sucess", "Sucessoes"),
+    ("empresarial", "Empresarial"),
+    ("societar", "Empresarial"),
+    ("recuperacao judicial", "Empresarial"),
+    ("falenc", "Empresarial"),
+    ("previdenc", "Previdenciario"),
+    ("ambient", "Ambiental"),
+    ("penal", "Criminal"),
+    ("criminal", "Criminal"),
+    ("inquerito", "Criminal"),
+    ("homicid", "Criminal"),
+    ("roubo", "Criminal"),
+    ("trabalh", "Trabalhista"),
+    ("civel", "Civel"),
+    ("obrigac", "Civel"),
+    ("contrat", "Civel"),
+    ("indenizat", "Civel"),
+    ("civil", "Civel"),
+]
+
+def _class_to_area(classe):
+    if not classe:
+        return "Civel"
+    cl = classe.lower()
+    for needle, area in _AREA_MAP:
+        if needle in cl:
+            return area
+    return "Civel"
+
+
 # ===================== DB HELPERS =====================
 
 def _auto_create_case(conn, pub, responsible_id, system="pje"):
@@ -605,7 +643,7 @@ def _auto_create_case(conn, pub, responsible_id, system="pje"):
     cid = f"case-{int(time.time()*1000)}-{hash(cnj_fmt)%1000000:06d}"
     now = datetime.utcnow().isoformat()
     title = pub.get("title") or f"Processo {cnj_fmt}"
-    area = pub.get("classe") or "monitoramento"
+    area = _class_to_area(pub.get("classe",""))
     court = pub.get("orgao") or pub.get("assunto") or ""
     try:
         conn.execute("""
