@@ -2701,6 +2701,52 @@ route("POST", "/api/llm/classify",              llm_classify)
 route("POST", "/api/llm/suggest",               llm_suggest)
 route("POST", "/api/llm/prioritize",            llm_prioritize)
 
+# ===================== GERENTE VIVO =====================
+def _require_mgr():
+    if not HAS_MANAGER:
+        return False
+    return True
+
+def manager_list(handler):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    return json_response(handler, 200, _manager.listar_sugestoes())
+
+def manager_apply(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    try: idx = int((body or {}).get("idx", -1))
+    except Exception: idx = -1
+    res = _manager.aplicar(idx)
+    return json_response(handler, 200 if res.get("ok") else 400, res)
+
+def manager_dismiss(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    try: idx = int((body or {}).get("idx", -1))
+    except Exception: idx = -1
+    res = _manager.dispensar(idx)
+    return json_response(handler, 200 if res.get("ok") else 400, res)
+
+def manager_get_settings(handler):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    return json_response(handler, 200, {"settings": _manager.get_settings()})
+
+def manager_set_settings(handler, body):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    body = body or {}
+    cfg = _manager.set_settings(enabled=body.get("enabled"), interval_minutes=body.get("interval_minutes"))
+    return json_response(handler, 200, {"settings": cfg})
+
+def manager_run_now(handler, body=None):
+    if not _require_mgr():
+        return json_response(handler, 503, {"error": "manager indisponivel"})
+    sugs = _manager.gerar_sugestoes()
+    return json_response(handler, 200, {"ok": True, "total": len(sugs), "sugestoes": sugs})
+
+
 route("GET",    "/api/manager/sugestoes",          manager_list)
 route("POST",   "/api/manager/apply",                manager_apply)
 route("POST",   "/api/manager/dismiss",              manager_dismiss)
@@ -2827,51 +2873,6 @@ class LexFlowHandler(BaseHTTPRequestHandler):
 
 
 # ----------------------------- MAIN -----------------------------
-
-# ===================== GERENTE VIVO =====================
-def _require_mgr():
-    if not HAS_MANAGER:
-        return False
-    return True
-
-def manager_list(handler):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    return json_response(handler, 200, _manager.listar_sugestoes())
-
-def manager_apply(handler, body):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    try: idx = int((body or {}).get("idx", -1))
-    except Exception: idx = -1
-    res = _manager.aplicar(idx)
-    return json_response(handler, 200 if res.get("ok") else 400, res)
-
-def manager_dismiss(handler, body):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    try: idx = int((body or {}).get("idx", -1))
-    except Exception: idx = -1
-    res = _manager.dispensar(idx)
-    return json_response(handler, 200 if res.get("ok") else 400, res)
-
-def manager_get_settings(handler):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    return json_response(handler, 200, {"settings": _manager.get_settings()})
-
-def manager_set_settings(handler, body):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    body = body or {}
-    cfg = _manager.set_settings(enabled=body.get("enabled"), interval_minutes=body.get("interval_minutes"))
-    return json_response(handler, 200, {"settings": cfg})
-
-def manager_run_now(handler, body=None):
-    if not _require_mgr():
-        return json_response(handler, 503, {"error": "manager indisponivel"})
-    sugs = _manager.gerar_sugestoes()
-    return json_response(handler, 200, {"ok": True, "total": len(sugs), "sugestoes": sugs})
 
 # ===================== MAIN =====================
 def main():
