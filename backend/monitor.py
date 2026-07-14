@@ -324,10 +324,16 @@ def _scraper_selenium_pje(cnj_digits):
     pubs, err = [], ""
     try:
         driver = _get_driver_singleton()
-        driver.set_page_load_timeout(45)
-        driver.get(url)
+        # v4.3.0: timeout curto (12s) - se o Comunica PJE demorar mais, sai rapido
+        # e o frontend mostra erro. Antes era 45s, pendurava o request HTTP.
+        PAGE_TIMEOUT = 12
+        driver.set_page_load_timeout(PAGE_TIMEOUT)
         try:
-            WebDriverWait(driver, 45).until(
+            driver.get(url)
+        except Exception as e:
+            return {"pubs": [], "url": url, "error": f"timeout carregando Comunica PJE ({PAGE_TIMEOUT}s)", "tribunal": cnj_to_tribunal(cnj_digits)}
+        try:
+            WebDriverWait(driver, PAGE_TIMEOUT).until(
                 EC.presence_of_element_located((
                     By.CSS_SELECTOR,
                     "table tbody tr, [class*='item'], [class*='publicacao'], [class*='resultado'], [class*='movimentacao'], mat-card, app-publicacao, .ng-star-inserted"
@@ -356,9 +362,9 @@ def _scraper_selenium_eproc(cnj_digits):
     pubs, err = [], ""
     try:
         driver = _get_driver_singleton()
-        driver.set_page_load_timeout(45)
+        driver.set_page_load_timeout(15)
         driver.get(url)
-        time.sleep(3.0)
+        time.sleep(2.0)
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaMovimentacoes tbody tr, table tbody tr, .evento, [class*='movimentacao']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "eProc", cnj_hint=cnj_fmt)
@@ -376,9 +382,9 @@ def _scraper_selenium_projudi(cnj_digits):
     pubs, err = [], ""
     try:
         driver = _get_driver_singleton()
-        driver.set_page_load_timeout(45)
+        driver.set_page_load_timeout(15)
         driver.get(url)
-        time.sleep(3.0)
+        time.sleep(2.0)
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaLinha tbody tr, table tbody tr, [class*='movimentacao']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "Projudi", cnj_hint=cnj_fmt)
@@ -396,9 +402,9 @@ def _scraper_selenium_esaj(cnj_digits):
     pubs, err = [], ""
     try:
         driver = _get_driver_singleton()
-        driver.set_page_load_timeout(45)
+        driver.set_page_load_timeout(15)
         driver.get(url)
-        time.sleep(3.0)
+        time.sleep(2.0)
         rows = driver.find_elements(By.CSS_SELECTOR, "#tabelaUltimasMovimentacoes tr, .movimentacao, table tbody tr, [class*='movimentacaoItem']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "e-SAJ", cnj_hint=cnj_fmt)
@@ -488,19 +494,39 @@ def scraper_pje_for_oab(numero_oab, uf, timeout=45):
     pubs, err = [], ""
     try:
         driver = _get_driver_singleton()
-        driver.set_page_load_timeout(timeout)
-        driver.get(url)
+        # v4.3.0: set_page_load_timeout 30s (sem filtro de data - URL limpa)
+        driver.set_page_load_timeout(30)
         try:
-            WebDriverWait(driver, timeout).until(
+            driver.get(url)
+        except Exception as e:
+            return {"pubs": [], "url": url, "error": f"timeout carregando Comunica PJE (30s)", "tribunal": sigla, "source": "selenium"}
+        try:
+            WebDriverWait(driver, 25).until(
                 EC.presence_of_element_located((
                     By.CSS_SELECTOR,
                     "table tbody tr, [class*='item'], [class*='publicacao'], [class*='resultado'], [class*='movimentacao'], mat-card, app-publicacao, .ng-star-inserted"
                 ))
             )
-            time.sleep(2.5)
+            time.sleep(2.0)
+            # v4.3.0: scrolla ate o fim pra carregar todas as publicacoes (lazy load)
+            try:
+                for _ in range(5):
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(0.6)
+            except Exception: pass
+            # volta pro topo
+            try: driver.execute_script("window.scrollTo(0, 0);")
+            except Exception: pass
             rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr, [class*='item'], [class*='publicacao'], mat-card, app-publicacao, .publicacao-item, .ng-star-inserted")
+            seen = set()
             for row in rows:
-                p = _extract_pub_from_row(row.text, "PJE-OAB")
+                txt = row.text or ""
+                if not txt or len(txt) < 5: continue
+                # dedup por hash do texto - evita duplicar quando varios seletores pegam o mesmo elemento
+                key = txt[:120]
+                if key in seen: continue
+                seen.add(key)
+                p = _extract_pub_from_row(txt, "PJE-OAB")
                 if p: pubs.append(p)
             # Sem fallback por body scan: CNJ aleatorio no DOM nao e publicacao real
             # Se nao achou linhas, retorna lista vazia (e o handler vai dizer "0 pubs")

@@ -3112,6 +3112,122 @@
     }
   }
 
+  // ----- WATCHDOG (Nivel 1) + PATCH SUGGESTER (Nivel 2) -----
+  async function refreshWatchdog() {
+    try {
+      const [st, di, pa] = await Promise.all([
+        API.get('/api/watchdog/status'),
+        API.get('/api/watchdog/diagnostics'),
+        API.get('/api/watchdog/patches'),
+      ]);
+      renderWatchdog(st, di, pa);
+    } catch (err) {
+      const badge = document.getElementById('watchdog-status-badge');
+      if (badge) { badge.textContent = 'erro'; badge.className = 'badge badge-red'; }
+    }
+  }
+  function renderWatchdog(st, di, pa) {
+    const badge = document.getElementById('watchdog-status-badge');
+    const last = document.getElementById('watchdog-last-check');
+    const listDiag = document.getElementById('watchdog-diagnostics');
+    const listPatch = document.getElementById('watchdog-patches');
+    if (!badge) return;
+    badge.textContent = (st && st.running) ? 'ATIVO' : 'PARADO';
+    badge.className = 'badge ' + ((st && st.running) ? 'badge-green' : 'badge-red');
+    if (last) {
+      last.textContent = 'Ultima varredura: ' + ((st && st.last_check) ? new Date(st.last_check).toLocaleString('pt-BR') : 'nunca') +
+        ' | log: ' + ((st && st.log_path) ? st.log_path : 'n/d') +
+        ' | LLM: ' + ((st && st.llm_available) ? 'ON' : 'OFF');
+    }
+    const diags = (di && di.diagnostics) || [];
+    if (listDiag) {
+      if (!diags.length) { listDiag.innerHTML = '<p class="sub">Nenhum erro detectado ate agora. O servidor esta saudavel.</p>'; }
+      else {
+        listDiag.innerHTML = '';
+        diags.slice().reverse().forEach(d => {
+          const ai = d.ai_diagnosis || {};
+          const sev = ai.severity || 'unknown';
+          const sevColor = sev === 'high' ? 'red' : sev === 'medium' ? 'yellow' : 'green';
+          const div = document.createElement('div');
+          div.style.cssText = 'padding:10px;border-left:3px solid #e74c3c;background:rgba(231,76,60,0.05);margin-bottom:8px;border-radius:4px;';
+          div.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">' +
+              '<span class="badge badge-' + sevColor + '">' + (sev || '?') + '</span>' +
+              '<span class="sub">' + (d.detected_at || '') + '</span>' +
+            '</div>' +
+            '<div style="font-size:13px;margin-bottom:4px;"><strong>Causa:</strong> ' + escapeHTML(ai.root_cause || '(analisando...)') + '</div>' +
+            '<div style="font-size:13px;margin-bottom:4px;"><strong>Fix:</strong> ' + escapeHTML(ai.suggested_fix || '(analisando...)') + '</div>' +
+            '<details style="font-size:12px;margin-top:4px;">' +
+              '<summary style="cursor:pointer;color:#888;">Ver traceback completo</summary>' +
+              '<pre style="background:#1a1a1a;color:#0f0;padding:8px;border-radius:4px;overflow:auto;max-height:200px;font-size:11px;">' +
+                escapeHTML(d.traceback || '') + '</pre></details>' +
+            '<button class="btn btn-sm btn-primary" data-suggest="' + d.id + '" style="margin-top:6px;">🧠 Sugerir patch</button>';
+          listDiag.appendChild(div);
+        });
+        listDiag.querySelectorAll('[data-suggest]').forEach(b => {
+          b.addEventListener('click', async () => {
+            const id = b.getAttribute('data-suggest');
+            b.disabled = true; b.textContent = 'gerando...';
+            try {
+              const r = await API.req('POST', '/api/watchdog/suggest-patch', { diagnostic_id: id });
+              if (r.error) { toast(r.error, 'error'); b.disabled = false; b.textContent = '🧠 Sugerir patch'; return; }
+              toast('Patch sugerido! Veja abaixo.', 'success');
+              await refreshWatchdog();
+            } catch (e) { toast('Erro: ' + e.message, 'error'); b.disabled = false; b.textContent = '🧠 Sugerir patch'; }
+          });
+        });
+      }
+    }
+    const patches = (pa && pa.patches) || [];
+    if (listPatch) {
+      if (!patches.length) { listPatch.innerHTML = '<p class="sub">Nenhum patch pendente.</p>'; }
+      else {
+        listPatch.innerHTML = '';
+        patches.forEach(p => {
+          if (p.applied || p.dismissed) return;
+          const div = document.createElement('div');
+          div.style.cssText = 'padding:10px;border-left:3px solid #f39c12;background:rgba(243,156,18,0.05);margin-bottom:8px;border-radius:4px;';
+          const file = (p.file_path || '').split(/[/\\]/).pop();
+          div.innerHTML =
+            '<div style="font-size:12px;color:#888;margin-bottom:4px;">' + escapeHTML(file) + ':' + (p.line_no || '?') + '</div>' +
+            '<div style="font-size:13px;margin-bottom:6px;">' + escapeHTML(p.explanation || '(sem explicacao)') + '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:6px;">' +
+              '<div style="background:rgba(231,76,60,0.1);padding:6px;border-radius:3px;"><strong>Antes:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;">' + escapeHTML(p.before || '') + '</pre></div>' +
+              '<div style="background:rgba(46,204,113,0.1);padding:6px;border-radius:3px;"><strong>Depois:</strong><pre style="margin:4px 0 0;white-space:pre-wrap;">' + escapeHTML(p.after || '') + '</pre></div>' +
+            '</div>' +
+            '<div class="flex gap-1">' +
+              '<button class="btn btn-sm btn-primary" data-apply="' + p.id + '">✓ Aplicar</button>' +
+              '<button class="btn btn-sm btn-ghost" data-dismiss="' + p.id + '">✗ Dispensar</button>' +
+            '</div>';
+          listPatch.appendChild(div);
+        });
+        listPatch.querySelectorAll('[data-apply]').forEach(b => {
+          b.addEventListener('click', async () => {
+            const id = b.getAttribute('data-apply');
+            if (!confirm('Aplicar este patch? Sera feito backup + git commit automatico.')) return;
+            try {
+              const r = await API.req('POST', '/api/watchdog/apply-patch', { id });
+              if (!r.ok) { toast('Erro: ' + (r.error || 'desconhecido'), 'error'); return; }
+              toast('Patch aplicado! Reinicie o servidor.', 'success');
+              await refreshWatchdog();
+            } catch (e) { toast('Erro: ' + e.message, 'error'); }
+          });
+        });
+        listPatch.querySelectorAll('[data-dismiss]').forEach(b => {
+          b.addEventListener('click', async () => {
+            const id = b.getAttribute('data-dismiss');
+            try { await API.req('POST', '/api/watchdog/dismiss-patch', { id }); await refreshWatchdog(); }
+            catch (e) { toast('Erro: ' + e.message, 'error'); }
+          });
+        });
+      }
+    }
+  }
+  async function runWatchdogNow() {
+    try { await API.req('POST', '/api/watchdog/run', {}); await refreshWatchdog(); toast('Varredura executada', 'success'); }
+    catch (e) { toast('Erro: ' + e.message, 'error'); }
+  }
+
   // ----- GERENTE VIVO -----
   async function refreshManager() {
     try {

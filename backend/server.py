@@ -41,6 +41,14 @@ except Exception as _e:
     HAS_MANAGER = False
     sys.stderr.write(f"[server] manager module not loaded: {_e}\n")
 
+try:
+    import watchdog as _watchdog
+    HAS_WATCHDOG = True
+except Exception as _e:
+    _watchdog = None
+    HAS_WATCHDOG = False
+    sys.stderr.write(f"[server] watchdog module not loaded: {_e}\n")
+
 # Instância global do worker (iniciada no main)
 MONITOR_WORKER = {"instance": None}
 
@@ -2701,6 +2709,53 @@ route("POST", "/api/llm/classify",              llm_classify)
 route("POST", "/api/llm/suggest",               llm_suggest)
 route("POST", "/api/llm/prioritize",            llm_prioritize)
 
+# ===================== WATCHDOG (Nivel 1) + PATCH SUGGESTER (Nivel 2) =====================
+def _require_wd():
+    return HAS_WATCHDOG and _watchdog is not None
+
+def watchdog_status_handler(handler):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    return json_response(handler, 200, _watchdog.get_watchdog().get_status())
+
+def watchdog_diagnostics_list(handler):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    return json_response(handler, 200, {"diagnostics": _watchdog.get_watchdog().get_diagnostics(limit=20)})
+
+def watchdog_patches_list(handler):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    return json_response(handler, 200, {"patches": _watchdog.get_watchdog().get_patches()})
+
+def watchdog_suggest_patch(handler, body):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    body = body or {}
+    diag_id = (body.get("diagnostic_id") or "").strip()
+    if not diag_id: return json_response(handler, 400, {"error": "diagnostic_id obrigatorio"})
+    result = _watchdog.get_watchdog().suggest_patch(diag_id)
+    if result is None: return json_response(handler, 404, {"error": "diagnostico nao encontrado"})
+    return json_response(handler, 200, result)
+
+def watchdog_apply_patch(handler, body):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    body = body or {}
+    pid = (body.get("id") or "").strip()
+    if not pid: return json_response(handler, 400, {"error": "id obrigatorio"})
+    result = _watchdog.get_watchdog().apply_patch(pid)
+    return json_response(handler, 200 if result.get("ok") else 400, result)
+
+def watchdog_dismiss_patch(handler, body):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    body = body or {}
+    pid = (body.get("id") or "").strip()
+    if not pid: return json_response(handler, 400, {"error": "id obrigatorio"})
+    return json_response(handler, 200, _watchdog.get_watchdog().dismiss_patch(pid))
+
+def watchdog_run_now(handler, body=None):
+    if not _require_wd(): return json_response(handler, 503, {"error": "watchdog indisponivel"})
+    wd = _watchdog.get_watchdog()
+    wd._scan_once()
+    return json_response(handler, 200, {"ran_at": wd.last_check, "diagnostics_count": len(wd.diagnostics)})
+
+
 # ===================== GERENTE VIVO =====================
 def _require_mgr():
     if not HAS_MANAGER:
@@ -2900,11 +2955,21 @@ def main():
     if HAS_MANAGER:
         try:
             _manager.start()
-            print("  Gerente vivo: ON (gerando sugestoes a cada 60 min)")
         except Exception as _e:
             sys.stderr.write(f"[server] nao foi possivel iniciar gerente: {_e}\n")
     else:
         print("  Gerente vivo: OFF (modulo indisponivel)")
+
+    # v4.3.0: Watchdog (Nivel 1) + Patch Suggester (Nivel 2)
+    if HAS_WATCHDOG:
+        try:
+            _wd = _watchdog.get_watchdog(poll_interval=30)
+            _wd.start()
+            print("  Watchdog (Nivel 1+2): ON (lendo " + str(_wd.log_path) + ")")
+        except Exception as _e:
+            sys.stderr.write(f"[server] nao foi possivel iniciar watchdog: {_e}\n")
+    else:
+        print("  Watchdog: OFF (modulo indisponivel)")
 
     print(f"  Banco de dados: {DB_PATH}")
     print(f"  Frontend:       {FRONTEND_DIR}")
