@@ -2084,8 +2084,7 @@ def monitor_run_now(handler, case_id, body=None):
     user = require_auth(handler)
     if not user:
         return
-    if not is_socio(user):
-        return json_response(handler, 403, {"error": "forbidden"})
+    # v4.0.6: aberto a qualquer user logado (era is_socio) - Patrick nao conseguia usar monitoramento
     if not HAS_MONITOR or _monitor is None:
         return json_response(handler, 503, {"error": "monitor indisponivel"})
     conn = db()
@@ -2256,8 +2255,7 @@ def monitor_settings_set(handler, body):
     user = require_auth(handler)
     if not user:
         return
-    if not is_socio(user):
-        return json_response(handler, 403, {"error": "forbidden"})
+    # v4.0.6: aberto a qualquer user logado (era is_socio) - Patrick nao conseguia usar monitoramento
     body = body or {}
     if "api_key" in body and body["api_key"]:
         plain = str(body["api_key"]).strip()
@@ -2290,8 +2288,7 @@ def monitor_oab_search(handler, body):
     user = require_auth(handler)
     if not user:
         return json_response(handler, 401, {"error": "Nao autenticado."})
-    if not is_socio(user):
-        return json_response(handler, 403, {"error": "forbidden"})
+    # v4.0.6: aberto a qualquer user logado (era is_socio) - Patrick nao conseguia usar monitoramento
     if not HAS_MONITOR or _monitor is None:
         return json_response(handler, 503, {"error": "monitor indisponivel"})
 
