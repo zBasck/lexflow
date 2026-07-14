@@ -1277,6 +1277,18 @@ def make_create(table, fields):
         except Exception as e:
             conn.close()
             return json_response(handler, 400, {"error": str(e)})
+        # FIX 3: se for caso, ja insere na tabela monitoring para aparecer no /api/monitoring/status
+        if table == "cases":
+            try:
+                _now = datetime.datetime.now().isoformat(timespec="seconds")
+                conn.execute(
+                    "INSERT OR REPLACE INTO monitoring(case_id, status, interval_minutes, tribunal, created_at, updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (rid, "active", 60, None, _now, _now),
+                )
+                conn.commit()
+            except Exception:
+                pass
         row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
         out = serialize_row(row)
         if table == "clients" and out.get("document"):
@@ -2104,7 +2116,8 @@ def monitor_run_now(handler, case_id, body=None):
             oab_uf = "RJ"  # fallback
         # Chama o Comunica PJE por NUMERO DE PROCESSO
         try:
-            res = _monitor.scraper_pje_for_case(cnj_fmt, oab_num, oab_uf)
+            # scraper_pje_for_case(cnj, system) tem 2 args; oab_num/oab_uf sao usados so para fallback
+            res = _monitor.scraper_pje_for_case(cnj_fmt, system="pje")
         except Exception as e:
             return json_response(handler, 500, {"error": "falha no Comunica PJE", "detail": str(e)[:200]})
         if res.get("error"):
@@ -2155,19 +2168,18 @@ def monitor_run_now(handler, case_id, body=None):
             "pubs": sample_pubs[:5],
         }
         # update last_check_at (atualiza o registro de monitoring deste caso)
-        if worker:
-            try:
-                _wconn = worker._conn()
-                _wconn.execute(
-                    "UPDATE monitoring SET last_check_at = ?, error_count = 0, last_error = NULL, updated_at = ? WHERE case_id = ?",
-                    (datetime.datetime.now().isoformat(timespec="seconds"),
-                     datetime.datetime.now().isoformat(timespec="seconds"),
-                     case_id),
-                )
-                _wconn.commit()
-                _wconn.close()
-            except Exception:
-                pass
+        try:
+            _wconn = db()
+            _wconn.execute(
+                "UPDATE monitoring SET last_check_at = ?, error_count = 0, last_error = NULL, updated_at = ? WHERE case_id = ?",
+                (datetime.datetime.now().isoformat(timespec="seconds"),
+                 datetime.datetime.now().isoformat(timespec="seconds"),
+                 case_id),
+            )
+            _wconn.commit()
+            _wconn.close()
+        except Exception:
+            pass
         audit(user["id"], "monitor_run", "case", case_id, None,
               {"pubs_found": len(pubs), "inserted": total_inserted, "auto_filled": auto_filled})
     finally:

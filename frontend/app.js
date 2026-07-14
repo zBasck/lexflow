@@ -792,6 +792,14 @@
       const folderRes = await API.req('GET', '/api/cases/' + cid + '/folder/files');
       S._caseFolders = folderRes.lists || [];
     } catch (e) { S._caseFolders = []; }
+    // FIX 2: carrega status do monitoramento deste caso para o switch toggle
+    let monitorActive = true;
+    let monitorExisting = null;
+    try {
+      const st = await API.req('GET', '/api/monitoring/status');
+      monitorExisting = (st.items || []).find(i => i.case_id === cid);
+      monitorActive = monitorExisting ? (monitorExisting.status === 'active') : true;
+    } catch (e) { monitorActive = true; }
 
   const onToggleMonitor = async () => {
     if (!S.user) return;
@@ -1018,7 +1026,7 @@
                   }, title: 'Buscar publicacoes deste processo no Comunica PJE' }, '🔄 Sync PJE'),
                 h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento'),
                 h('label', { class: 'switch', title: 'Ativar/pausar monitoramento deste caso no Comunica PJE', style: 'margin-left:8px;vertical-align:middle' },
-                  h('input', { type: 'checkbox', id: 'case-monitor-toggle', checked: true, onchange: async (e) => {
+                  h('input', { type: 'checkbox', id: 'case-monitor-toggle', checked: monitorActive, onchange: async (e) => {
                     const newStatus = e.target.checked ? 'active' : 'paused';
                     try {
                       await API.req('POST', '/api/cases/' + cid + '/monitor', { status: newStatus });
@@ -1027,7 +1035,11 @@
                   } }),
                   h('span', { class: 'switch-slider' })
                 ),
-                h('span', { class: 'muted small', style: 'margin-left:4px;vertical-align:middle' }, 'Monitorar')
+                h('span', { class: 'muted small', style: 'margin-left:4px;vertical-align:middle' }, 'Monitorar'),
+                monitorExisting
+                  ? h('span', { class: 'muted small', style: 'margin-left:8px;vertical-align:middle' },
+                      '(' + (monitorExisting.interval_minutes || 60) + ' min)')
+                  : null
               )
             ),
             updates.length === 0 ? h('div', { class: 'empty' }, h('p', null, 'Nenhum andamento registrado'))

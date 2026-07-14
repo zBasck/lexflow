@@ -359,6 +359,15 @@ def _auto_create_case(conn, pub, responsible_id, system="pje"):
             VALUES(?,?,?,?,?,?,?,?,?,?)
         """, (cid, cnj_fmt, f"Processo {cnj_fmt}", "monitoramento", "em_andamento", "media",
               responsible_id, system, 1, now))
+        # FIX 3b: insere tambem na tabela monitoring para aparecer em /api/monitoring/status
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO monitoring(case_id, status, interval_minutes, tribunal, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (cid, "active", 60, None, now, now),
+            )
+        except Exception:
+            pass
         conn.commit()
         return cid
     except Exception:
