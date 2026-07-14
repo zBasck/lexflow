@@ -1063,8 +1063,7 @@
                       let msg = 'Comunica PJE: ' + pf + ' publicacao(oes) encontrada(s), ' + ins + ' nova(s)';
                       if (r.auto_filled && Object.keys(r.auto_filled).length) msg += ' | preenchido: ' + Object.keys(r.auto_filled).join(', ');
                       toast(msg, ins > 0 ? 'ok' : 'info');
-                      await loadAll();
-                      render();
+                      await softRefresh();
                     } catch (e) { toast('Erro: ' + e.message, 'err'); }
                   }, title: 'Buscar publicacoes deste processo no Comunica PJE' }, '🔄 Sync PJE'),
                 h('button', { class: 'btn btn-sm btn-primary', onclick: onAddUpdate }, '+ Andamento'),
@@ -1079,6 +1078,20 @@
                   h('span', { class: 'switch-slider' })
                 ),
                 h('span', { class: 'muted small', style: 'margin-left:4px;vertical-align:middle' }, 'Monitorar'),
+                h('button', { class: 'btn btn-sm', style: { marginLeft: '8px' },
+                  onclick: async () => {
+                    if (!S_llm.status || !S_llm.status.available) { await llmCheck(); }
+                    if (!S_llm.status || !S_llm.status.available) { toast('Mistral offline. Va em Configuracoes > LLM local.', 'warning'); return; }
+                    try {
+                      const last5 = updates.slice(-5);
+                      const ctx = last5.map(u => (u.title || '') + ' - ' + (u.description || '')).join(' | ');
+                      const prompt = 'Voce e um assistente juridico. Para o caso "' + (C.title || '') + '" com as ultimas publicacoes: ' + ctx + '. Sugira 3 proximos passos praticos em uma linha cada.';
+                      const r = await API.req('POST', '/api/llm/summarize', { text: prompt, mode: 'suggest' });
+                      const txt = (r && (r.summary || r.text)) || 'Sem resposta.';
+                      showModal('IA - Proximos passos sugeridos', '<pre style="white-space:pre-wrap;font:14px sans-serif">' + escapeHTML(txt) + '</pre>');
+                    } catch (e) { toast('Erro: ' + e.message, 'error'); }
+                  }
+                }, '🧠 IA Sugerir'),
                 monitorExisting
                   ? h('span', { class: 'muted small', style: 'margin-left:8px;vertical-align:middle' },
                       '(' + (monitorExisting.interval_minutes || 60) + ' min)')
@@ -2873,6 +2886,7 @@
             if (samplePubs.length > 1 && inserted > 0) {
               openPjePubsModal(it, samplePubs);
             }
+            await softRefresh();
             await loadAll();
             render();
           } catch (e) {

@@ -338,11 +338,9 @@ def _scraper_selenium_pje(cnj_digits):
             for row in rows:
                 p = _extract_pub_from_row(row.text, "PJE", cnj_hint=cnj_fmt)
                 if p: pubs.append(p)
+            # Sem body scan: CNJ aleatorio no DOM nao e publicacao real
             if not pubs:
-                body = driver.find_element(By.TAG_NAME, "body").text
-                for c in set(re.findall(r"\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}", body))[:30]:
-                    pubs.append({"cnj": c, "date": "", "type": "Publicacao",
-                                 "title": f"Publicacao - {c}", "description": f"CNJ localizado via busca por CNJ: {c}", "raw": c})
+                err = "Selenium Comunica PJE: 0 publicacoes encontradas (sem body scan fallback)"
         except Exception as e:
             err = f"timeout Selenium: {str(e)[:120]}"
     except Exception as e:
@@ -422,8 +420,8 @@ SCRAPERS = {
 
 def scraper_pje_for_case(cnj, system="pje"):
     """Pipeline de busca por CNJ:
-    1. DataJud CNJ API (rapido, sem browser, REST puro) - tenta primeiro
-    2. Selenium no Comunica PJE / eProc / Projudi / e-SAJ (fallback)
+    1. Selenium no Comunica PJE / eProc / Projudi / e-SAJ (fonte primaria real)
+    2. DataJud CNJ API (fallback se Selenium falhar ou vier vazio)
     Retorna dict com pubs, url, error, tribunal, case_info.
     """
     _, digits = normalize_cnj(cnj)
@@ -433,7 +431,29 @@ def scraper_pje_for_case(cnj, system="pje"):
     tribunal = cnj_to_tribunal(digits)
     err_total = ""
 
-    # 1) Tenta DataJud (publico, sem auth, sem browser)
+    # 1) Selenium PRIMARIO - fonte real de publicacoes
+    fn = SCRAPERS.get((system or "pje").lower(), _scraper_selenium_pje)
+    try:
+        res = fn(digits)
+        if res.get("pubs"):
+            res["tribunal"] = res.get("tribunal") or tribunal
+            res["source"] = "selenium"
+            # tenta extrair case_info do primeiro pub
+            first = res["pubs"][0]
+            res["case_info"] = {
+                "classe": first.get("classe", ""),
+                "assunto": first.get("assunto", ""),
+                "orgao": first.get("orgao", ""),
+                "magistrado": first.get("magistrado", ""),
+                "valor_causa": first.get("valor_causa", ""),
+                "partes": first.get("partes", []),
+            }
+            return res
+        err_total = res.get("error", "") or "Selenium Comunica PJE retornou 0 publicacoes"
+    except Exception as e:
+        err_total = f"Selenium: {str(e)[:120]}"
+
+    # 2) Fallback DataJud - soh se Selenium nao trouxe nada
     if tribunal in _TRIBUNAL_CODES:
         try:
             pubs, raw = _datajud_get_movs(digits, tribunal)
@@ -450,20 +470,10 @@ def scraper_pje_for_case(cnj, system="pje"):
                     "pubs": pubs, "url": f"{DATAJUD_BASE}/api_publica_{_TRIBUNAL_CODES[tribunal]}/_search",
                     "error": "", "tribunal": tribunal, "case_info": case_info, "source": "datajud",
                 }
-            elif raw and raw.get("_error"):
-                err_total = f"DataJud: {raw.get('_error')}"
         except Exception as e:
-            err_total = f"DataJud: {str(e)[:120]}"
+            err_total += f" | DataJud: {str(e)[:80]}"
 
-    # 2) Fallback: Selenium headless no sistema do caso
-    fn = SCRAPERS.get((system or "pje").lower(), _scraper_selenium_pje)
-    res = fn(digits)
-    if res.get("pubs"):
-        res["source"] = "selenium"
-    elif err_total and not res.get("error"):
-        res["error"] = err_total
-    res["tribunal"] = res.get("tribunal") or tribunal
-    return res
+    return {"pubs": [], "url": "", "error": err_total, "tribunal": tribunal, "case_info": {}}
 
 
 def scraper_pje_for_oab(numero_oab, uf, timeout=45):
@@ -492,11 +502,8 @@ def scraper_pje_for_oab(numero_oab, uf, timeout=45):
             for row in rows:
                 p = _extract_pub_from_row(row.text, "PJE-OAB")
                 if p: pubs.append(p)
-            if not pubs:
-                body = driver.find_element(By.TAG_NAME, "body").text
-                for c in set(re.findall(r"\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}", body))[:30]:
-                    pubs.append({"cnj": c, "date": "", "type": "Publicacao",
-                                 "title": f"Publicacao OAB {numero_oab}/{uf}", "description": f"CNJ localizado via busca por OAB: {c}", "raw": c})
+            # Sem fallback por body scan: CNJ aleatorio no DOM nao e publicacao real
+            # Se nao achou linhas, retorna lista vazia (e o handler vai dizer "0 pubs")
         except Exception as e:
             err = f"timeout: {str(e)[:120]}"
     except Exception as e:

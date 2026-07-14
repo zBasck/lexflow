@@ -1681,7 +1681,7 @@ def dashboard_summary(handler):
         "SELECT u.id, u.case_id, u.date, u.title, u.description,"
         " c.code AS case_code, c.title AS case_title, c.area AS case_area"
         " FROM case_updates u LEFT JOIN cases c ON c.id = u.case_id"
-        " WHERE u.type='publicacao' AND (u.deleted_at IS NULL OR u.deleted_at='')"
+        " WHERE u.type='publicacao'"
         " ORDER BY u.date DESC LIMIT 10"
     ).fetchall()
     recent_pubs = [dict(r) for r in recent_pubs_raw]
