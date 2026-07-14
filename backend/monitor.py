@@ -225,24 +225,29 @@ def scraper_pje_for_case(cnj, system="pje"):
     return fn(digits)
 
 
-def scraper_pje_for_oab(numero_oab, uf):
+def scraper_pje_for_oab(numero_oab, uf, timeout=20):
     if not numero_oab or not uf or not SELENIUM_OK:
-        return []
+        return {"pubs": [], "url": "", "error": ""}
     sigla = uf_to_tribunal(uf)
     url = f"https://comunica.pje.jus.br/consulta?siglaTribunal={sigla}&numeroOab={numero_oab}&ufOab={uf}"
     pubs = []
+    err = ""
     try:
         driver = _get_driver_singleton()
+        driver.set_page_load_timeout(timeout)
         driver.get(url)
-        if not _wait_for_rows(driver):
-            return []
-        time.sleep(1.5)
-        for row in driver.find_elements(By.CSS_SELECTOR, "table tbody tr"):
-            p = _extract_pub_from_row(row.text, "PJE-OAB")
-            if p: pubs.append(p)
+        if not _wait_for_rows(driver, timeout=timeout):
+            err = "timeout aguardando publicacoes"
+        else:
+            time.sleep(1.5)
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr, [class*='item'], [class*='publicacao']")
+            for row in rows:
+                p = _extract_pub_from_row(row.text, "PJE-OAB")
+                if p: pubs.append(p)
     except Exception as e:
+        err = str(e)[:200]
         print(f"[pje-oab] {e}")
-    return pubs
+    return {"pubs": pubs, "url": url, "error": err}
 
 
 class MonitoringWorker:
@@ -283,7 +288,8 @@ class MonitoringWorker:
                 SELECT DISTINCT u.id AS user_id, u.oab, u.oab_uf
                 FROM users u JOIN cases c ON c.responsible_id = u.id
                 WHERE c.monitoring_active = 1 AND c.deleted_at IS NULL
-                  AND (c.system = 'pje' OR c.system IS NULL) AND u.oab IS NOT NULL
+                  AND (c.system IS NULL OR c.system IN ('pje','eproc','projudi','esaj','trt','stf','stj','manual'))
+                  AND u.oab IS NOT NULL
             """).fetchall()
             for r in rows:
                 oab = _parse_oab(r["oab"] or "")
