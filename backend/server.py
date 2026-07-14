@@ -25,6 +25,14 @@ except Exception as _e:
     HAS_MONITOR = False
     sys.stderr.write(f"[server] monitor module not loaded: {_e}\n")
 
+try:
+    import llm as _llm
+    HAS_LLM = True
+except Exception as _e:
+    _llm = None
+    HAS_LLM = False
+    sys.stderr.write(f"[server] llm module not loaded: {_e}\n")
+
 # Instância global do worker (iniciada no main)
 MONITOR_WORKER = {"instance": None}
 
@@ -1512,6 +1520,109 @@ route("DELETE", "/api/users/{id}", users_delete)
 
 # ---- DASHBOARD ----
 
+
+
+# ===================== LLM (Ollama local) =====================
+
+def llm_status(handler):
+    """GET /api/llm/status - checa se Ollama esta rodando e quais modelos estao disponiveis."""
+    user = require_auth(handler)
+    if not user: return
+    if not HAS_LLM or _llm is None:
+        return json_response(handler, 200, {"available": False, "models": [], "reason": "modulo llm nao carregado"})
+    try:
+        ok = _llm.is_available()
+        models = _llm.list_models() if ok else []
+        return json_response(handler, 200, {
+            "available": ok,
+            "models": models,
+            "default_model": _llm.DEFAULT_MODEL,
+            "ollama_url": _llm.OLLAMA_URL,
+        })
+    except Exception as e:
+        return json_response(handler, 200, {"available": False, "models": [], "error": str(e)[:200]})
+
+
+def _llm_action(handler, action):
+    """POST /api/llm/<action> - sumariza/classifica/sugere/prioriza."""
+    user = require_auth(handler)
+    if not user: return
+    if not HAS_LLM or _llm is None:
+        return json_response(handler, 503, {"error": "modulo llm nao carregado"})
+    body = read_body(handler) or {}
+    try:
+        if action == "summarize":
+            text = (body.get("text") or body.get("description") or "").strip()
+            if not text: return json_response(handler, 400, {"error": "text obrigatorio"})
+            summary = _llm.summarize_publication(text)
+            return json_response(handler, 200, {"summary": summary or ""})
+        if action == "classify":
+            text = (body.get("text") or body.get("description") or "").strip()
+            if not text: return json_response(handler, 400, {"error": "text obrigatorio"})
+            cls = _llm.classify_publication(text)
+            return json_response(handler, 200, {"classification": cls or {}})
+        if action == "suggest":
+            case_id = body.get("case_id")
+            if not case_id: return json_response(handler, 400, {"error": "case_id obrigatorio"})
+            conn = db()
+            try:
+                case_row = conn.execute(
+                    "SELECT id, code, title, area, court, status, priority FROM cases WHERE id=?",
+                    (case_id,),
+                ).fetchone()
+                if not case_row:
+                    return json_response(handler, 404, {"error": "caso nao encontrado"})
+                pub_rows = conn.execute(
+                    "SELECT id, type, description, date FROM case_updates "
+                    "WHERE case_id=? ORDER BY date DESC LIMIT 5",
+                    (case_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+            case_summary = f"{case_row['title']} ({case_row['code']}) - area: {case_row['area'] or '-'} - status: {case_row['status'] or '-'}"
+            pubs = [{"title": r["type"] or "Andamento", "description": r["description"] or ""} for r in pub_rows]
+            suggestion = _llm.suggest_next_steps(case_summary, pubs)
+            return json_response(handler, 200, {"suggestion": suggestion or ""})
+        if action == "prioritize":
+            tasks = body.get("tasks") or []
+            if not tasks: return json_response(handler, 400, {"error": "tasks obrigatorio"})
+            order = _llm.prioritize_tasks(tasks)
+            return json_response(handler, 200, {"order": order or ""})
+        return json_response(handler, 404, {"error": "acao desconhecida: " + action})
+    except Exception as e:
+        return json_response(handler, 500, {"error": str(e)[:200]})
+
+
+def llm_summarize(handler, body):    return _llm_action(handler, "summarize")
+def llm_classify(handler, body):     return _llm_action(handler, "classify")
+def llm_suggest(handler, body):      return _llm_action(handler, "suggest")
+def llm_prioritize(handler, body):   return _llm_action(handler, "prioritize")
+
+
+# Enriquecimento automatico das publicacoes com LLM (se disponivel)
+def _enrich_pubs_with_llm(pubs, max_n=5):
+    """Se Ollama disponivel, adiciona campo 'ai_summary' e 'ai_class' nos primeiros N pubs."""
+    if not HAS_LLM or _llm is None or not _llm.is_available():
+        return pubs
+    enriched = []
+    for i, p in enumerate(pubs):
+        if i >= max_n:
+            break
+        try:
+            desc = (p.get("description") or p.get("raw") or "")[:1500]
+            if not desc:
+                continue
+            summary = _llm.summarize_publication(desc)
+            if summary:
+                p["ai_summary"] = summary
+            cls = _llm.classify_publication(desc)
+            if cls and isinstance(cls, dict):
+                p["ai_class"] = cls
+        except Exception:
+            pass
+    return pubs
+
+
 def dashboard_summary(handler):
     if not require_auth(handler):
         return json_response(handler, 401, {"error": "Nao autenticado."})
@@ -2123,6 +2234,8 @@ def monitor_run_now(handler, case_id, body=None):
             return json_response(handler, 502, {"error": res["error"], "url": res.get("url", "")})
         pubs = res.get("pubs", [])
         case_info = res.get("case_info", {})
+        try: _enrich_pubs_with_llm(pubs, max_n=3)
+        except Exception: pass
         
         # Auto-preencher dados do caso a partir da publicacao
         auto_filled = {}
@@ -2305,6 +2418,8 @@ def monitor_oab_search(handler, body):
         return json_response(handler, 502, {"error": res["error"], "url": res.get("url", "")})
 
     pubs = res.get("pubs", [])
+    try: _enrich_pubs_with_llm(pubs, max_n=3)
+    except Exception: pass
     worker = MONITOR_WORKER.get("instance")
     total_inserted = 0
     new_cases = 0
@@ -2314,7 +2429,7 @@ def monitor_oab_search(handler, body):
             cnj = pub.get("cnj", "")
             case_id = None
             if cnj:
-                case_id = worker._find_case_by_cnj(cnj)
+                case_id = worker._find_case_by_cnj(cnj, user["id"])
                 if not case_id:
                     case_id = worker._auto_create_case(pub, user["id"])
                     if case_id:
@@ -2572,6 +2687,11 @@ route("GET",  "/api/monitoring/settings",      monitor_settings_get)
 route("POST", "/api/monitoring/settings",      monitor_settings_set)
 route("GET",  "/api/monitoring/log",           monitor_log_list)
 route("POST", "/api/monitoring/oab-search",      monitor_oab_search)
+route("GET",  "/api/llm/status",                llm_status)
+route("POST", "/api/llm/summarize",             llm_summarize)
+route("POST", "/api/llm/classify",              llm_classify)
+route("POST", "/api/llm/suggest",               llm_suggest)
+route("POST", "/api/llm/prioritize",            llm_prioritize)
 
 route("POST",   "/api/cases/{id}/folder",        case_folder_set)
 route("DELETE", "/api/cases/{id}/folder",        case_folder_unset)

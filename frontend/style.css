@@ -439,6 +439,52 @@ textarea { resize: vertical; min-height: 70px; font-family: inherit; }
   letter-spacing: 0.04em;
 }
 .badge-navy { background: var(--navy); color: #fff; }
+.badge-ok   { background: #2f9e44; color: #fff; }
+.badge-off  { background: #adb5bd; color: #fff; }
+.badge-error{ background: #e03131; color: #fff; }
+
+/* Modal generico */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 20px;
+}
+.modal {
+  background: #fff; border-radius: 12px; max-width: 720px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-height: 90vh; overflow: auto;
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { margin: 0; }
+.modal-body { padding: 20px; line-height: 1.5; }
+
+/* Spinner simples (para botoes de IA em espera) */
+.spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+  vertical-align: -2px; margin-right: 4px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Tabela de logs de monitoramento mais limpa */
+.monitoring-log-row {
+  display: flex; align-items: center; gap: 12px; padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.monitoring-log-row .pill {
+  background: var(--bg-3); color: var(--ink-2); border-radius: 4px;
+  padding: 2px 8px; font-size: 11px; font-weight: 600;
+}
+
+body[data-theme="dark"] .modal { background: var(--bg-2); color: var(--ink); }
+body[data-theme="dark"] .badge-ok  { background: #2f9e44; color: #fff; }
+body[data-theme="dark"] .badge-off { background: #555; color: #ddd; }
+body[data-theme="dark"] .badge-error{background: #e03131; color: #fff; }
+body[data-theme="dark"] .modal-header { border-bottom-color: var(--border); }
+
 .badge-gold { background: var(--gold); color: var(--navy); }
 .badge-success { background: #e3f1ea; color: var(--success); }
 .badge-warning { background: #fdf1d8; color: var(--warning); }

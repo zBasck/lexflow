@@ -122,6 +122,36 @@
   };
   const todayISO = () => new Date().toISOString().slice(0, 10);
 
+  // ---------------- LLM (Ollama) ----------------
+  const S_llm = { status: null, lastCheck: 0 };
+  async function llmCheck() {
+    if (Date.now() - S_llm.lastCheck < 30000) return S_llm.status;
+    try {
+      const r = await API.get('/api/llm/status');
+      S_llm.status = r;
+    } catch (e) { S_llm.status = { available: false, error: e.message }; }
+    S_llm.lastCheck = Date.now();
+    return S_llm.status;
+  }
+  async function llmBusy(btn, fn) {
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Pensando...';
+    try { return await fn(); }
+    finally { btn.disabled = false; btn.innerHTML = orig; }
+  }
+
+  function showModal(title, content) {
+    const m = h('div', { class: 'modal-overlay', onclick: (e) => { if (e.target.classList.contains('modal-overlay')) m.remove(); } },
+      h('div', { class: 'modal', style: { maxWidth: '600px' } },
+        h('div', { class: 'modal-header' }, h('h3', null, title),
+          h('button', { class: 'btn btn-ghost', onclick: () => m.remove() }, '✕')),
+        h('div', { class: 'modal-body' }, content)
+      )
+    );
+    document.body.appendChild(m);
+  }
+
   function toast(msg, type) {
     const t = h('div', { class: 'toast ' + (type || '') }, msg);
     document.body.appendChild(t);
@@ -283,7 +313,7 @@
         localStorage.setItem('lexflow_token', r.token);
         localStorage.setItem('lexflow_csrf', r.csrf);
         await loadAll();
-        toast('Bem-vindo, ' + S.user.name.split(' ')[0] + '!', 'success');
+        toast('Bem-vindo, ' + S.user.name.split(' ')[0] + '!', 'success'); llmCheck();
         go('dashboard');
       } catch (err) { toast(err.message, 'error'); }
     };
@@ -1050,16 +1080,30 @@
                     h('div', { class: 'timeline-title' }, u.title),
                     u.description ? h('div', { class: 'timeline-desc' }, u.description) : null
                   ),
-                  h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 8px', fontSize: '11px' },
-                    onclick: async (e) => {
-                      e.stopPropagation();
-                      if (!confirm('Excluir este andamento?')) return;
-                      try {
-                        await API.req('DELETE', '/api/case-updates/' + u.id);
-                        toast('Andamento excluido', 'success');
-                        render();
-                      } catch (err) { toast(err.message, 'error'); }
-                    } }, '🗑')
+                  h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+                    h('button', { class: 'btn btn-sm btn-ghost', title: 'Resumir com Mistral (LLM local)',
+                      style: { color: 'var(--accent)', padding: '2px 8px', fontSize: '11px' },
+                      onclick: async (e) => {
+                        e.stopPropagation();
+                        if (!S_llm.status || !S_llm.status.available) { await llmCheck(); }
+                        if (!S_llm.status || !S_llm.status.available) { toast('Mistral offline. Va em Configuracoes > LLM local.', 'warning'); return; }
+                        const btn = e.target; await llmBusy(btn, async () => {
+                          const text = (u.description || u.title || '').replace(/^\[hash:[0-9a-f]+\]\s*/i, '');
+                          const summary = await llmSummarizeText(text);
+                          if (summary) { toast('Resumo: ' + summary, 'success'); }
+                          else { toast('Sem resposta do modelo.', 'error'); }
+                        });
+                      } }, '✨'),
+                    h('button', { class: 'btn btn-sm btn-ghost', style: { color: 'var(--danger)', padding: '2px 8px', fontSize: '11px' },
+                      onclick: async (e) => {
+                        e.stopPropagation();
+                        if (!confirm('Excluir este andamento?')) return;
+                        try {
+                          await API.req('DELETE', '/api/case-updates/' + u.id);
+                          toast('Andamento excluido', 'success');
+                          render();
+                        } catch (err) { toast(err.message, 'error'); }
+                      } }, '🗑'))
                 )
               )))
           ),
@@ -2249,7 +2293,41 @@
         }, style: { marginTop: '8px' } }, 'Salvar notificacoes')
       ),
       h('div', { class: 'card' },
-        h('div', { class: 'card-header' }, h('h3', null, '🔔 Monitoramento (Comunica PJE)')),
+        h('div', { class: 'card', style: 'padding:18px;margin-bottom:14px' },
+        h('div', { class: 'card-header' },
+          h('h3', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+            ['🤖 LLM local (Ollama)',
+             h('span', { id: 'llm-badge', class: 'badge ' + (S_llm.status && S_llm.status.available ? 'badge-ok' : 'badge-off'),
+                         style: { fontSize: '10px' } },
+               S_llm.status && S_llm.status.available ? 'ONLINE' : 'OFFLINE')]
+          )
+        ),
+        h('p', { class: 'muted', style: { margin: '0 0 10px 0' } },
+          'O Ollama roda localmente com modelo Mistral. Usado para resumir publicacoes, classificar tipo/urgencia, sugerir proximos passos e priorizar tarefas. Sem Ollama o sistema funciona normalmente so sem essas ajudas automaticas.'),
+        h('div', { id: 'llm-status', style: { fontSize: '12px', color: 'var(--ink-2)', marginBottom: '10px' } },
+          S_llm.status && S_llm.status.available
+            ? 'Modelos: ' + ((S_llm.status.models || []).join(', ') || '(nenhum)') + ' | Padrao: ' + (S_llm.status.default_model || '-')
+            : (S_llm.status && S_llm.status.error ? 'Erro: ' + S_llm.status.error : 'Verificando...')),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          h('button', { class: 'btn btn-ghost', onclick: async (e) => {
+              const btn = e.target; btn.disabled = true; btn.textContent = 'Verificando...';
+              S_llm.lastCheck = 0; await llmCheck();
+              btn.disabled = false; btn.textContent = '🔄 Verificar agora';
+              const badge = document.getElementById('llm-badge');
+              if (badge) { badge.className = 'badge ' + (S_llm.status && S_llm.status.available ? 'badge-ok' : 'badge-off'); badge.textContent = S_llm.status && S_llm.status.available ? 'ONLINE' : 'OFFLINE'; }
+          } }, '🔄 Verificar agora'),
+          h('button', { class: 'btn btn-ghost', onclick: async (e) => {
+              if (!S_llm.status || !S_llm.status.available) { toast('Ollama offline. Instale em https://ollama.com/download e rode: ollama pull mistral', 'warning'); return; }
+              await llmBusy(e.target, async () => {
+                const t = await llmSummarizeText('Intimacao do autor para apresentar contestacao no prazo de 15 dias.');
+                if (t) toast('Mistral OK: ' + t.slice(0, 120), 'success');
+                else toast('Sem resposta do modelo.', 'error');
+              });
+          } }, '🧪 Testar Mistral'),
+          h('a', { class: 'btn btn-ghost', href: 'https://ollama.com/download', target: '_blank' }, '📥 Instalar Ollama')
+        )
+      ),
+      h('div', { class: 'card-header' }, h('h3', null, '🔔 Monitoramento (Comunica PJE)')),
         h('div', { class: 'modal-info' },
           h('strong', null, 'Como funciona:'),
           h('br'),
