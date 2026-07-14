@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import llm
+import llm
 
 DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "lexflow.db")
 
