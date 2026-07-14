@@ -134,81 +134,94 @@ def _extract_pub_from_row(txt, source_label):
 
 def _scraper_selenium_pje(cnj_digits):
     if not cnj_digits or len(cnj_digits) != 20 or not SELENIUM_OK:
-        return []
+        return {"pubs": [], "url": "", "error": ""}
     url = f"https://comunica.pje.jus.br/consulta?numeroProcesso={cnj_digits}"
     pubs = []
+    err = ""
     try:
         driver = _get_driver_singleton()
+        driver.set_page_load_timeout(45)
         driver.get(url)
-        if not _wait_for_rows(driver):
-            return []
-        time.sleep(1.5)
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        if not rows:
-            rows = driver.find_elements(By.CSS_SELECTOR, "[class*='item'], [class*='publicacao']")
-        for row in rows:
-            p = _extract_pub_from_row(row.text, "PJE")
-            if p: pubs.append(p)
+        if not _wait_for_rows(driver, timeout=45):
+            err = "timeout aguardando publicacoes"
+        else:
+            time.sleep(2.0)
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            if not rows:
+                rows = driver.find_elements(By.CSS_SELECTOR, "[class*='item'], [class*='publicacao'], mat-card, app-publicacao, .publicacao-item, .ng-star-inserted")
+            for row in rows:
+                p = _extract_pub_from_row(row.text, "PJE")
+                if p: pubs.append(p)
     except Exception as e:
+        err = str(e)[:200]
         print(f"[pje] {e}")
-    return pubs
+    return {"pubs": pubs, "url": url, "error": err}
 
 
 def _scraper_selenium_eproc(cnj_digits):
     if not cnj_digits or len(cnj_digits) != 20 or not SELENIUM_OK:
-        return []
+        return {"pubs": [], "url": "", "error": ""}
     cnj_fmt = f"{cnj_digits[0:7]}-{cnj_digits[7:9]}.{cnj_digits[9:13]}.{cnj_digits[13]}.{cnj_digits[14:16]}.{cnj_digits[16:20]}"
     url = f"https://eproc1g.tjrj.jus.br/eproc/externo_controlador.php?acao=consulta_publica&num_processo={cnj_fmt}"
     pubs = []
+    err = ""
     try:
         driver = _get_driver_singleton()
+        driver.set_page_load_timeout(45)
         driver.get(url)
-        time.sleep(2.5)
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaMovimentacoes tbody tr, table tbody tr")
+        time.sleep(3.0)
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaMovimentacoes tbody tr, table tbody tr, .evento, [class*='movimentacao']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "eProc")
             if p: pubs.append(p)
     except Exception as e:
+        err = str(e)[:200]
         print(f"[eproc] {e}")
-    return pubs
+    return {"pubs": pubs, "url": url, "error": err}
 
 
 def _scraper_selenium_projudi(cnj_digits):
     if not cnj_digits or len(cnj_digits) != 20 or not SELENIUM_OK:
-        return []
+        return {"pubs": [], "url": "", "error": ""}
     cnj_fmt = f"{cnj_digits[0:7]}-{cnj_digits[7:9]}.{cnj_digits[9:13]}.{cnj_digits[13]}.{cnj_digits[14:16]}.{cnj_digits[16:20]}"
     url = f"https://projudi.tjrj.jus.br/projudi/consultaPublica.do?actionType=consulta&numero={cnj_fmt}"
     pubs = []
+    err = ""
     try:
         driver = _get_driver_singleton()
+        driver.set_page_load_timeout(45)
         driver.get(url)
-        time.sleep(2.5)
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaLinha tbody tr, table tbody tr")
+        time.sleep(3.0)
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.tabelaLinha tbody tr, table tbody tr, [class*='movimentacao']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "Projudi")
             if p: pubs.append(p)
     except Exception as e:
+        err = str(e)[:200]
         print(f"[projudi] {e}")
-    return pubs
+    return {"pubs": pubs, "url": url, "error": err}
 
 
 def _scraper_selenium_esaj(cnj_digits):
     if not cnj_digits or len(cnj_digits) != 20 or not SELENIUM_OK:
-        return []
+        return {"pubs": [], "url": "", "error": ""}
     cnj_fmt = f"{cnj_digits[0:7]}-{cnj_digits[7:9]}.{cnj_digits[9:13]}.{cnj_digits[13]}.{cnj_digits[14:16]}.{cnj_digits[16:20]}"
     url = f"https://esaj.tjsp.jus.br/cpopg/search.do?cbPesquisa=NUMPROC&dadosConsulta.valorConsultaNuUnificado={cnj_fmt}"
     pubs = []
+    err = ""
     try:
         driver = _get_driver_singleton()
+        driver.set_page_load_timeout(45)
         driver.get(url)
-        time.sleep(2.5)
-        rows = driver.find_elements(By.CSS_SELECTOR, "#tabelaUltimasMovimentacoes tr, .movimentacao, table tbody tr")
+        time.sleep(3.0)
+        rows = driver.find_elements(By.CSS_SELECTOR, "#tabelaUltimasMovimentacoes tr, .movimentacao, table tbody tr, [class*='movimentacaoItem']")
         for row in rows:
             p = _extract_pub_from_row(row.text, "e-SAJ")
             if p: pubs.append(p)
     except Exception as e:
+        err = str(e)[:200]
         print(f"[esaj] {e}")
-    return pubs
+    return {"pubs": pubs, "url": url, "error": err}
 
 
 SCRAPERS = {
@@ -225,9 +238,9 @@ def scraper_pje_for_case(cnj, system="pje"):
     return fn(digits)
 
 
-def scraper_pje_for_oab(numero_oab, uf, timeout=20):
+def scraper_pje_for_oab(numero_oab, uf, timeout=45):
     if not numero_oab or not uf or not SELENIUM_OK:
-        return {"pubs": [], "url": "", "error": ""}
+        return {"pubs": [], "url": "", "error": "selenium nao disponivel ou parametros invalidos"}
     sigla = uf_to_tribunal(uf)
     url = f"https://comunica.pje.jus.br/consulta?siglaTribunal={sigla}&numeroOab={numero_oab}&ufOab={uf}"
     pubs = []
@@ -236,14 +249,24 @@ def scraper_pje_for_oab(numero_oab, uf, timeout=20):
         driver = _get_driver_singleton()
         driver.set_page_load_timeout(timeout)
         driver.get(url)
+        # Comunica PJE e SPA Angular - esperar mais tempo e selectors mais amplos
         if not _wait_for_rows(driver, timeout=timeout):
             err = "timeout aguardando publicacoes"
         else:
-            time.sleep(1.5)
-            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr, [class*='item'], [class*='publicacao']")
+            time.sleep(2.5)
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr, [class*='item'], [class*='publicacao'], mat-card, app-publicacao, .publicacao-item, .ng-star-inserted")
             for row in rows:
                 p = _extract_pub_from_row(row.text, "PJE-OAB")
                 if p: pubs.append(p)
+            if not pubs:
+                # Fallback: pegar o body inteiro e tentar extrair CNJs
+                try:
+                    body = driver.find_element(By.TAG_NAME, "body").text
+                    cnjs = re.findall(r"\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}", body)
+                    for c in set(cnjs)[:30]:
+                        pubs.append({"cnj": c, "date": "", "title": f"Publicacao OAB {numero_oab}/{uf}", "description": f"CNJ localizado via busca por OAB: {c}", "raw": c})
+                except Exception:
+                    pass
     except Exception as e:
         err = str(e)[:200]
         print(f"[pje-oab] {e}")
