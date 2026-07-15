@@ -35,17 +35,30 @@
   // ---------------- API ----------------
   const API = {
     async req(method, path, body) {
-      const opts = { method, headers: {}, credentials: 'same-origin' };
-      if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
-      if (body !== undefined) {
-        opts.headers['Content-Type'] = 'application/json';
-        opts.body = JSON.stringify(body);
+      // FIX 4.0.4: contador de requests em voo -> indicador global de loading
+      S._inflight = (S._inflight || 0) + 1;
+      _setGlobalLoader(S._inflight);
+      let r;
+      try {
+        const opts = { method, headers: {}, credentials: 'same-origin' };
+        if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
+        if (body !== undefined) {
+          opts.headers['Content-Type'] = 'application/json';
+          opts.body = JSON.stringify(body);
+        }
+        // CSRF para metodos que modificam estado
+        if (method !== 'GET' && method !== 'OPTIONS' && S.csrf) {
+          opts.headers['X-CSRF-Token'] = S.csrf;
+        }
+        try {
+          r = await fetch(path, opts);
+        } catch (networkErr) {
+          throw new Error('Falha de rede. Verifique sua conexao ou se o servidor esta rodando.');
+        }
+      } finally {
+        S._inflight = Math.max(0, (S._inflight || 1) - 1);
+        _setGlobalLoader(S._inflight);
       }
-      // CSRF para metodos que modificam estado
-      if (method !== 'GET' && method !== 'OPTIONS' && S.csrf) {
-        opts.headers['X-CSRF-Token'] = S.csrf;
-      }
-      const r = await fetch(path, opts);
       let data;
       try { data = await r.json(); } catch (e) { data = {}; }
       if (r.status === 401 && path !== '/api/auth/login' && path !== '/api/auth/register') {
@@ -150,6 +163,30 @@
       )
     );
     document.body.appendChild(m);
+  }
+
+  // FIX 4.0.4: indicador global visivel em TODAS as abas enquanto ha requests em voo
+  function _setGlobalLoader(n) {
+    let el = document.getElementById('global-loader');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'global-loader';
+      el.innerHTML = '<div class="spinner"></div><span class="msg">Carregando...</span>';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;height:3px;background:rgba(0,0,0,0);z-index:99999;pointer-events:none;display:none;';
+      const sp = el.querySelector('.spinner');
+      sp.style.cssText = 'position:absolute;left:0;top:0;height:3px;width:30%;background:linear-gradient(90deg,transparent,#3b82f6,transparent);animation:gl-slide 1.2s ease-in-out infinite;';
+      const lbl = el.querySelector('.msg');
+      lbl.style.cssText = 'position:fixed;top:8px;right:16px;background:rgba(59,130,246,0.95);color:white;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+      const style = document.createElement('style');
+      style.textContent = '@keyframes gl-slide{0%{left:-30%}100%{left:100%}}';
+      document.head.appendChild(style);
+      document.body.appendChild(el);
+    }
+    if (n > 0) {
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
   }
 
   function toast(msg, type) {

@@ -14,7 +14,7 @@ import re
 import uuid
 import datetime
 import inspect
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -612,15 +612,24 @@ def seed(conn):
 # ----------------------------- HELPERS -----------------------------
 
 def json_response(handler, status, data):
-    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        handler.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+        # Cliente (browser) fechou a conexao antes de receber o body.
+        # Comum quando o fetch e cancelado (timeout, troca de aba, etc).
+        # Silencioso: o handler ja terminou a logica; so nao conseguiu entregar o body.
+        pass
+    except Exception:
+        # Qualquer outro erro de I/O nao deve derrubar o servidor
+        pass
 
 
 def read_body(handler):
@@ -1400,7 +1409,7 @@ route("GET",    "/api/clients/{id}", make_get("clients"))
 route("PUT",    "/api/clients/{id}", make_update("clients", ["type","name","document","email","phone","address","notes"]))
 route("DELETE", "/api/clients/{id}", make_delete("clients"))
 
-CASE_FIELDS = ["code","title","client_id","area","status","priority","value","court","opposing_party","description","next_deadline","responsible_id","tags"]
+CASE_FIELDS = ["code","title","client_id","area","status","priority","value","court","opposing_party","description","next_deadline","responsible_id","tags","system"]
 route("GET",    "/api/cases", make_list("cases", "created_at DESC"))
 route("POST",   "/api/cases", make_create("cases", CASE_FIELDS))
 route("GET",    "/api/cases/{id}", make_get("cases"))
@@ -2979,7 +2988,7 @@ def main():
     print("  Pressione Ctrl+C para encerrar")
     print("=" * 60)
     try:
-        with HTTPServer(("0.0.0.0", PORT), LexFlowHandler) as httpd:
+        with ThreadingHTTPServer(("0.0.0.0", PORT), LexFlowHandler) as httpd:
             httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n  LexFlow encerrado.")
