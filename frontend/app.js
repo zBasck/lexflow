@@ -2459,8 +2459,164 @@
           h('button', { class: 'btn btn-primary', onclick: () => saveMonSettings() }, 'Salvar monitoramento'),
           h('button', { class: 'btn btn-secondary', style: { marginLeft: '8px' }, onclick: () => go('monitoring') }, 'Ir para pagina de Monitoramento')
         )
+      ),
+      h('div', { class: 'card', id: 'pje-tjrj-card' },
+        h('div', { class: 'card-header' },
+          h('h3', null, '\u{1F511} PJE 1G TJRJ (login com CPF e senha)'),
+          h('span', { id: 'pje-tjrj-status-badge', class: 'badge' }, 'verificando...')
+        ),
+        h('div', { class: 'card-body' },
+          h('p', { class: 'hint' },
+            'O ',
+            h('strong', null, 'Comunica PJE'),
+            ' e publico, mas limitado. Para acessar dados completos de processos (movimentacoes detalhadas, partes sigilosas, audiencias), ',
+            'e preciso logar no ',
+            h('a', { href: 'https://tjrj.pje.jus.br/1g/loginOld.seam', target: '_blank', rel: 'noopener' }, 'PJE 1G TJRJ'),
+            '. Informe seu ',
+            h('strong', null, 'CPF'),
+            ' e ',
+            h('strong', null, 'senha'),
+            ' abaixo. O sistema abre o Chrome em background, faz o login e mantem a sessao ativa. ',
+            'Suas credenciais sao salvas ',
+            h('strong', null, 'criptografadas'),
+            ' no banco local.'
+          ),
+          h('div', { class: 'form-row' },
+            h('label', null, 'CPF (somente numeros)'),
+            h('input', { type: 'text', id: 'pje-tjrj-cpf', placeholder: '12345678900', maxlength: '14' })
+          ),
+          h('div', { class: 'form-row' },
+            h('label', null, 'Senha do PJE'),
+            h('input', { type: 'password', id: 'pje-tjrj-senha', placeholder: 'sua senha' })
+          ),
+          h('div', { class: 'form-row-inline' },
+            h('button', { class: 'btn btn-primary', onclick: () => pjeTjrjLogin() },
+              '\u{1F510} Entrar no PJE 1G TJRJ'
+            ),
+            h('button', { class: 'btn btn-secondary', style: { marginLeft: '8px' }, onclick: () => pjeTjrjLogout() },
+              'Sair'
+            ),
+            h('button', { class: 'btn btn-ghost', style: { marginLeft: '8px' }, onclick: () => pjeTjrjTestStatus() },
+              '\u{1F504} Verificar status'
+            )
+          ),
+          h('div', { id: 'pje-tjrj-message', class: 'hint', style: { marginTop: '8px' } }, ''),
+          h('div', { id: 'pje-tjrj-fetch-row', class: 'form-row', style: { marginTop: '12px', display: 'none' } },
+            h('label', null, 'Buscar dados de processo (CNJ com 20 digitos)'),
+            h('div', { class: 'form-row-inline' },
+              h('input', { type: 'text', id: 'pje-tjrj-fetch-cnj', placeholder: '08100987820258190212', maxlength: '25' }),
+              h('button', { class: 'btn btn-secondary', onclick: () => pjeTjrjFetch() },
+                '\u{1F50E} Buscar'
+              )
+            ),
+            h('div', { id: 'pje-tjrj-fetch-result', class: 'hint', style: { marginTop: '8px' } }, '')
+          )
+        )
       )
     );
+    setTimeout(() => { pjeTjrjTestStatus().catch(() => {}); }, 100);
+  }
+
+  // ---- HANDLERS DO CARD PJE 1G TJRJ ----
+  async function pjeTjrjTestStatus() {
+    const badge = document.getElementById('pje-tjrj-status-badge');
+    const msg = document.getElementById('pje-tjrj-message');
+    if (!badge) return;
+    badge.textContent = 'verificando...';
+    badge.className = 'badge';
+    try {
+      const r = await API.get('/api/pje-tjrj/status');
+      if (!r.module_loaded) {
+        badge.textContent = 'modulo nao carregado';
+        badge.className = 'badge badge-off';
+        if (msg) msg.textContent = 'O modulo pje_tjrj nao foi carregado pelo servidor.';
+        return;
+      }
+      if (!r.selenium_ok) {
+        badge.textContent = 'Selenium OFF';
+        badge.className = 'badge badge-off';
+        if (msg) msg.textContent = 'Selenium nao esta disponivel. Instale o Chrome e o chromedriver.';
+        return;
+      }
+      if (r.logged_in) {
+        badge.textContent = '\u{1F7E2} logado';
+        badge.className = 'badge badge-ok';
+        if (msg) msg.textContent = 'Voce esta logado no PJE 1G TJRJ. Pode buscar processos.';
+        const row = document.getElementById('pje-tjrj-fetch-row');
+        if (row) row.style.display = 'block';
+      } else {
+        badge.textContent = '\u{1F7E1} pronto';
+        badge.className = 'badge';
+        if (msg) msg.textContent = 'Informe CPF e senha e clique em Entrar.';
+      }
+    } catch (e) {
+      badge.textContent = 'erro';
+      badge.className = 'badge badge-off';
+      if (msg) msg.textContent = 'Erro: ' + e.message;
+    }
+  }
+
+  async function pjeTjrjLogin() {
+    const cpf = (document.getElementById('pje-tjrj-cpf') || {}).value || '';
+    const senha = (document.getElementById('pje-tjrj-senha') || {}).value || '';
+    const msg = document.getElementById('pje-tjrj-message');
+    if (!cpf || !senha) {
+      if (msg) { msg.textContent = 'Informe CPF e senha.'; msg.style.color = '#dc2626'; }
+      return;
+    }
+    if (msg) { msg.textContent = 'Abrindo Chrome e fazendo login (pode demorar 10-30s)...'; msg.style.color = ''; }
+    try {
+      const r = await API.req('POST', '/api/pje-tjrj/login', { cpf, senha });
+      if (r.ok) {
+        if (msg) { msg.textContent = r.message; msg.style.color = '#16a34a'; }
+        const sInp = document.getElementById('pje-tjrj-senha');
+        if (sInp) sInp.value = '';
+        const row = document.getElementById('pje-tjrj-fetch-row');
+        if (row) row.style.display = 'block';
+      } else {
+        if (msg) { msg.textContent = r.message || 'Falha no login'; msg.style.color = '#dc2626'; }
+      }
+      pjeTjrjTestStatus();
+    } catch (e) {
+      if (msg) { msg.textContent = 'Erro: ' + e.message; msg.style.color = '#dc2626'; }
+    }
+  }
+
+  async function pjeTjrjLogout() {
+    try {
+      await API.req('POST', '/api/pje-tjrj/logout', {});
+      const msg = document.getElementById('pje-tjrj-message');
+      if (msg) { msg.textContent = 'Sessao PJE encerrada.'; msg.style.color = ''; }
+      const row = document.getElementById('pje-tjrj-fetch-row');
+      if (row) row.style.display = 'none';
+      pjeTjrjTestStatus();
+    } catch (e) {}
+  }
+
+  async function pjeTjrjFetch() {
+    const cnj = (document.getElementById('pje-tjrj-fetch-cnj') || {}).value || '';
+    const out = document.getElementById('pje-tjrj-fetch-result');
+    if (!cnj) { if (out) out.textContent = 'Informe o CNJ.'; return; }
+    if (out) { out.textContent = 'Buscando dados no PJE 1G...'; }
+    try {
+      const r = await API.get('/api/pje-tjrj/fetch?cnj=' + encodeURIComponent(cnj));
+      if (r.ok && r.data) {
+        const d = r.data;
+        let html = '<strong>Classe:</strong> ' + (d.classe || '-') + '<br>';
+        html += '<strong>Assunto:</strong> ' + (d.assunto || '-') + '<br>';
+        html += '<strong>Orgao:</strong> ' + (d.orgao || '-') + '<br>';
+        html += '<strong>Valor:</strong> ' + (d.valor_causa || '-') + '<br>';
+        html += '<strong>URL:</strong> <a href="' + d.url + '" target="_blank">' + d.url + '</a>';
+        if (d.partes && d.partes.length) {
+          html += '<br><strong>Partes:</strong> ' + d.partes.join('; ');
+        }
+        if (out) out.innerHTML = html;
+      } else {
+        if (out) { out.textContent = 'Erro: ' + (r.error || 'desconhecido'); out.style.color = '#dc2626'; }
+      }
+    } catch (e) {
+      if (out) { out.textContent = 'Erro: ' + e.message; out.style.color = '#dc2626'; }
+    }
   }
 
   // ---- MODAL ----

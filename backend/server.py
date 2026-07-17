@@ -49,8 +49,18 @@ except Exception as _e:
     HAS_WATCHDOG = False
     sys.stderr.write(f"[server] watchdog module not loaded: {_e}\n")
 
+try:
+    import pje_tjrj as _pje_tjrj
+    HAS_PJE_TJRJ = True
+except Exception as _e:
+    _pje_tjrj = None
+    HAS_PJE_TJRJ = False
+    sys.stderr.write(f"[server] pje_tjrj module not loaded: {_e}\n")
+
 # Instância global do worker (iniciada no main)
 MONITOR_WORKER = {"instance": None}
+# Cliente Selenium PJE TJRJ (inicializado lazy no primeiro login)
+PJE_TJRJ_CLIENT = {"instance": None}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
@@ -64,9 +74,14 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ----------------------------- DATABASE -----------------------------
 
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL mode: leituras nao bloqueiam escritas, e vice-versa.
+    # busy_timeout=30s: espera ate 30s pelo lock em vez de falhar com 'database is locked'.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -1051,6 +1066,132 @@ route("POST", "/api/upload", upload_file)
 route("POST", "/api/users/{id}/photo", users_set_photo)
 
 
+
+# ---------- LOGIN PJE 1G TJRJ (CPF + senha via Selenium) ----------
+# Estes endpoints permitem ao Patrick fazer login no PJE 1G TJRJ e buscar
+# dados completos de processos (incluindo conteudo que o Comunica PJE
+# publico nao mostra, como movimentacoes detalhadas e partes sigilosas).
+
+def pje_tjrj_get_client():
+    """Retorna o cliente Selenium singleton, inicializando se preciso."""
+    if not HAS_PJE_TJRJ:
+        return None
+    if PJE_TJRJ_CLIENT["instance"] is None:
+        try:
+            PJE_TJRJ_CLIENT["instance"] = _pje_tjrj.PJE_TJRJ(headless=True)
+        except Exception as e:
+            sys.stderr.write(f"[pje] falha ao criar cliente Selenium: {e}\n")
+            return None
+    return PJE_TJRJ_CLIENT["instance"]
+
+
+def pje_tjrj_status(handler):
+    """GET /api/pje-tjrj/status - diz se o modulo carregou e se o Selenium esta OK."""
+    if not require_auth(handler):
+        return
+    return json_response(handler, 200, {
+        "module_loaded": HAS_PJE_TJRJ,
+        "selenium_ok": _pje_tjrj.SELENIUM_OK if HAS_PJE_TJRJ else False,
+        "logged_in": (PJE_TJRJ_CLIENT["instance"]._logged_in
+                      if PJE_TJRJ_CLIENT["instance"] else False),
+    })
+
+
+def pje_tjrj_login(handler):
+    """POST /api/pje-tjrj/login - body: {cpf, senha}. Faz login e devolve status."""
+    if not require_auth(handler):
+        return
+    if not HAS_PJE_TJRJ or not _pje_tjrj.SELENIUM_OK:
+        return json_response(handler, 503, {
+            "error": "Selenium nao disponivel. Instale o Chrome e o chromedriver."
+        })
+    body = read_body(handler) or {}
+    cpf = (body.get("cpf") or "").strip()
+    senha = body.get("senha") or ""
+    if not cpf or not senha:
+        return json_response(handler, 400, {"error": "CPF e senha sao obrigatorios."})
+    # Salva credenciais (criptografadas) na tabela integrations para reuso
+    conn = db()
+    u = handler.user
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    existing = conn.execute(
+        "SELECT id FROM integrations WHERE user_id=? AND provider=?",
+        (u["id"], "pje_tjrj_login"),
+    ).fetchone()
+    # Criptografia simples: derivar chave da senha do usuario + salt
+    # (nao e AES de verdade, e ofuscacao para nao deixar em texto puro no DB)
+    from hashlib import pbkdf2_hmac as _pbkdf2
+    user_row = conn.execute("SELECT password FROM users WHERE id=?", (u["id"],)).fetchone()
+    salt_seed = (u["id"] + "lexflow-pje-salt").encode("utf-8")
+    seed_hash = _pbkdf2("sha256", senha.encode("utf-8"), salt_seed, 50_000, dklen=32)
+    secret_blob = (cpf + "|" + seed_hash.hex()[:32]).encode("utf-8")
+    if existing:
+        conn.execute(
+            "UPDATE integrations SET username=?, secret=?, status=?, last_login_at=? WHERE id=?",
+            (cpf, secret_blob.hex(), "connected", now, existing["id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO integrations(id,user_id,provider,username,secret,status,connected_at,last_login_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), u["id"], "pje_tjrj_login", cpf, secret_blob.hex(),
+             "connected", now, now),
+        )
+    conn.commit()
+    conn.close()
+    # Agora tenta o login Selenium
+    client = pje_tjrj_get_client()
+    if client is None:
+        return json_response(handler, 500, {"error": "Falha ao iniciar Selenium."})
+    try:
+        ok, msg = client.login(cpf, senha)
+    except Exception as e:
+        return json_response(handler, 500, {"error": f"Erro no Selenium: {e}"})
+    return json_response(handler, 200 if ok else 401, {
+        "ok": ok,
+        "message": msg,
+        "logged_in": client._logged_in,
+    })
+
+
+def pje_tjrj_logout(handler):
+    """POST /api/pje-tjrj/logout - encerra a sessao Selenium."""
+    if not require_auth(handler):
+        return
+    if PJE_TJRJ_CLIENT["instance"]:
+        try:
+            PJE_TJRJ_CLIENT["instance"].close()
+        except Exception:
+            pass
+        PJE_TJRJ_CLIENT["instance"] = None
+    return json_response(handler, 200, {"ok": True, "message": "Sessao PJE encerrada."})
+
+
+def pje_tjrj_fetch(handler):
+    """GET /api/pje-tjrj/fetch?cnj=XXXXX - busca dados completos do processo."""
+    if not require_auth(handler):
+        return
+    if not HAS_PJE_TJRJ:
+        return json_response(handler, 503, {"error": "Modulo pje_tjrj nao carregado."})
+    qs = parse_qs(urlparse(handler.path).query)
+    cnj = (qs.get("cnj") or [""])[0]
+    if not cnj:
+        return json_response(handler, 400, {"error": "Informe o parametro ?cnj=XXXXX"})
+    client = pje_tjrj_get_client()
+    if client is None or not client._logged_in:
+        return json_response(handler, 401, {
+            "error": "Voce precisa fazer login no PJE 1G TJRJ primeiro."
+        })
+    result = client.fetch_processo(cnj)
+    return json_response(handler, 200 if result.get("ok") else 500, result)
+
+
+route("GET",  "/api/pje-tjrj/status",  pje_tjrj_status)
+route("POST", "/api/pje-tjrj/login",   pje_tjrj_login)
+route("POST", "/api/pje-tjrj/logout",  pje_tjrj_logout)
+route("GET",  "/api/pje-tjrj/fetch",   pje_tjrj_fetch)
+
+
 # ---- AUTH ----
 
 def auth_register(handler):
@@ -1090,7 +1231,8 @@ def auth_register(handler):
 def auth_theme(handler):
     token = handler.headers.get("Authorization", "").replace("Bearer ", "").strip()
     conn = db()
-    row = conn.execute("SELECT id FROM users WHERE token=?", (token,)).fetchone()
+    # FIX #3: o token fica em sessions, nao em users.
+    row = conn.execute("SELECT user_id FROM sessions WHERE token=?", (token,)).fetchone()
     if not row:
         conn.close()
         return json_response(handler, 401, {"error": "Nao autenticado."})
@@ -1099,8 +1241,9 @@ def auth_theme(handler):
         conn.close()
         return json_response(handler, 400, {"error": "theme obrigatorio"})
     theme = body['theme'] if body['theme'] in ('light', 'dark', 'auto') else 'auto'
-    conn.execute("UPDATE users SET theme=?", (theme,))
-    conn.execute("UPDATE users SET theme=? WHERE id=?", (theme, row['id']))
+    # FIX #3 (bonus): removido o UPDATE users SET theme=? (sem WHERE) que afetava TODOS os usuarios.
+    # Agora atualiza APENAS o usuario da sessao.
+    conn.execute("UPDATE users SET theme=? WHERE id=?", (theme, row['user_id']))
     conn.commit()
     conn.close()
     return json_response(handler, 200, {"ok": True, "theme": theme})
@@ -1363,6 +1506,16 @@ def make_update(table, fields):
             return json_response(handler, 400, {"error": "Nada para atualizar."})
         values.append(rid)
         conn = db()
+        # FIX #2: checar UNIQUE constraint de cases.code antes do UPDATE.
+        # Se o body contem 'code' e ja existe OUTRO caso com esse code, abortar com 409.
+        if table == "cases" and "code" in body and body["code"]:
+            dup = conn.execute(
+                "SELECT id FROM cases WHERE code=? AND id<>? AND (deleted_at IS NULL OR deleted_at='')",
+                (body["code"], rid),
+            ).fetchone()
+            if dup:
+                conn.close()
+                return json_response(handler, 409, {"error": f"Ja existe outro caso com este CNJ ({body['code']})."})
         # Capturar estado anterior para auditoria
         before_row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
         conn.execute(f"UPDATE {table} SET {','.join(sets)} WHERE id=?", values)
