@@ -1833,7 +1833,7 @@ def dashboard_summary(handler):
     total_cases = cnt(f"SELECT COUNT(*) FROM cases WHERE {NOT_DELETED}")
     active_cases = cnt(f"SELECT COUNT(*) FROM cases WHERE {NOT_DELETED} AND status='em_andamento'")
     total_clients = cnt(f"SELECT COUNT(*) FROM clients WHERE {NOT_DELETED}")
-    total_users = cnt(f"SELECT COUNT(*) FROM users WHERE {NOT_DELETED}")
+    total_users = cnt("SELECT COUNT(*) FROM users")
 
     today_events = conn.execute(f"SELECT * FROM events WHERE {NOT_DELETED} AND date=? ORDER BY time", (today,)).fetchall()
     upcoming_events = conn.execute(f"SELECT * FROM events WHERE {NOT_DELETED} AND date>=? AND date<=? ORDER BY date, time", (today, in15)).fetchall()
