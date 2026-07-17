@@ -675,6 +675,18 @@ def require_auth(handler):
     return dict(user)
 
 
+
+
+def _get_uid(handler):
+    """Pega o user_id do header Authorization (Bearer token). Helper para integracoes."""
+    token = handler.headers.get("Authorization", "")[7:]
+    if not token: return None
+    conn = db()
+    row = conn.execute("SELECT user_id FROM sessions WHERE token=?", (token,)).fetchone()
+    conn.close()
+    return row["user_id"] if row else None
+
+
 def serialize_row(r):
     if r is None:
         return None
@@ -912,7 +924,7 @@ def users_set_photo(handler, uid):
 def integrations_list(handler):
     if not require_auth(handler):
         return
-    u = handler.user
+    u = require_auth(handler) or {}
     conn = db()
     rows = conn.execute(
         "SELECT id, provider, username, status, connected_at, last_login_at FROM integrations WHERE user_id=? ORDER BY provider",
@@ -928,7 +940,7 @@ def integrations_connect_pje(handler, body):
         return
     body = body if body is not None else read_body(handler)
     body = body or {}
-    u = handler.user
+    u = require_auth(handler) or {}
     username = (body.get("username") or "").strip()
     secret = (body.get("secret_2fa") or "").strip().upper().replace(" ", "")
     if not username:
@@ -972,7 +984,7 @@ def integrations_connect_eproc(handler, body):
         return
     body = body if body is not None else read_body(handler)
     body = body or {}
-    u = handler.user
+    u = require_auth(handler) or {}
     username = (body.get("username") or "").strip()
     if not username:
         return json_response(handler, 400, {"error": "username obrigatorio"})
@@ -1009,9 +1021,10 @@ def integrations_totp_code(handler, body):
         secret = (body.get("secret_2fa") or "").strip().upper().replace(" ", "")
         if not secret:
             conn = db()
+            uid2 = _get_uid(handler)
             row = conn.execute(
                 "SELECT secret_2fa FROM integrations WHERE user_id=? AND provider=?",
-                (handler.user["id"], "pje_tjrj"),
+                (uid2, "pje_tjrj"),
             ).fetchone()
             conn.close()
             if not row or not row["secret_2fa"]:
@@ -1038,7 +1051,7 @@ def integrations_disconnect_pje(handler):
         return
     conn = db()
     conn.execute("DELETE FROM integrations WHERE user_id=? AND provider=?",
-                 (handler.user["id"], "pje_tjrj"))
+                 (_get_uid(handler), "pje_tjrj"))
     conn.commit()
     conn.close()
     return json_response(handler, 200, {"ok": True})
@@ -1049,7 +1062,7 @@ def integrations_disconnect_eproc(handler):
         return
     conn = db()
     conn.execute("DELETE FROM integrations WHERE user_id=? AND provider=?",
-                 (handler.user["id"], "eproc_tjrj"))
+                 (_get_uid(handler), "eproc_tjrj"))
     conn.commit()
     conn.close()
     return json_response(handler, 200, {"ok": True})
@@ -1112,7 +1125,7 @@ def pje_tjrj_login(handler):
         return json_response(handler, 400, {"error": "CPF e senha sao obrigatorios."})
     # Salva credenciais (criptografadas) na tabela integrations para reuso
     conn = db()
-    u = handler.user
+    u = require_auth(handler) or {}
     now = datetime.datetime.now().isoformat(timespec="seconds")
     existing = conn.execute(
         "SELECT id FROM integrations WHERE user_id=? AND provider=?",
