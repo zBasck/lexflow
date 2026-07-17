@@ -2443,6 +2443,21 @@
           'e a publicação vira um andamento do caso. ',
           'A consulta é publica e nao exige chave de API.'
         ),
+        h('div', { class: 'form-row-inline' },
+          h('div', { style: { flex: 1, marginRight: '8px' } },
+            h('label', null, 'Sua OAB (para busca automatica no DJE)'),
+            h('input', { type: 'text', id: 'mon-oab', placeholder: '244384', maxLength: '10' })
+          ),
+          h('div', { style: { width: '80px' } },
+            h('label', null, 'UF'),
+            h('input', { type: 'text', id: 'mon-oab-uf', placeholder: 'RJ', maxLength: '2' })
+          )
+        ),
+        h('div', { class: 'modal-info' },
+          'Quando preenchidos, o sistema busca publicacoes do DJE (Diario de Justica Eletronico) ',
+          'via API publica ', h('code', null, 'comunica-api.pje.jus.br/api/v1/comunicacao'),
+          ' automaticamente, sem precisar de Selenium. Deixa em branco para nao buscar por OAB.'
+        ),
         h('div', { class: 'form-row' },
           h('label', null, 'Intervalo padrao (minutos)'),
           h('input', { type: 'number', id: 'mon-interval', min: '5', max: '1440', value: '60' })
@@ -3557,6 +3572,10 @@
       document.getElementById('mon-email').checked = s['monitor.notify_email'] === '1';
       document.getElementById('mon-email-addr').value = s['monitor.notify_email_address'] || '';
       document.getElementById('mon-email-row').style.display = s['monitor.notify_email'] === '1' ? 'block' : 'none';
+      const oabEl = document.getElementById('mon-oab');
+      const oabUfEl = document.getElementById('mon-oab-uf');
+      if (oabEl) oabEl.value = s['monitor.oab'] || '';
+      if (oabUfEl) oabUfEl.value = s['monitor.oab_uf'] || '';
     });
 
     // toggle do campo de e-mail
@@ -3575,6 +3594,10 @@
       notify_email: document.getElementById('mon-email').checked,
       notify_email_address: document.getElementById('mon-email-addr').value,
     };
+    const oabInput = document.getElementById('mon-oab');
+    const oabUfInput = document.getElementById('mon-oab-uf');
+    if (oabInput) body.oab = oabInput.value.replace(/\D/g, '');
+    if (oabUfInput) body.oab_uf = oabUfInput.value.toUpperCase().trim();
     try {
       await API.req('POST', '/api/monitoring/settings', body);
       toast('Configurações salvas', 'ok');

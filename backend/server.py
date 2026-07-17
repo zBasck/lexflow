@@ -2568,6 +2568,7 @@ def monitor_settings_get(handler):
         "monitor.api_key", "monitor.default_interval_minutes", "monitor.notify_desktop",
         "monitor.notify_email", "monitor.notify_email_address",
         "monitor.dje_enabled", "monitor.datajud_enabled",
+        "monitor.oab", "monitor.oab_uf",
     ]
     out = {k: _mon_settings_get(k, "") for k in keys}
     if "monitor.api_key" in out and out["monitor.api_key"]:
@@ -2604,6 +2605,13 @@ def monitor_settings_set(handler, body):
     # mantemos retrocompat para nao quebrar UI antiga
     if "notify_email_address" in body:
         _mon_settings_set("monitor.notify_email_address", str(body["notify_email_address"] or ""))
+    # v4.5.4: OAB/UF para busca automatica no DJE (aba Monitoramento)
+    if "oab" in body:
+        v = re.sub(r"[^0-9]", "", str(body["oab"] or ""))[:10]
+        _mon_settings_set("monitor.oab", v)
+    if "oab_uf" in body:
+        v = str(body["oab_uf"] or "").upper().strip()[:2]
+        _mon_settings_set("monitor.oab_uf", v)
     return monitor_settings_get(handler)
 
 

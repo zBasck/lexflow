@@ -23,6 +23,10 @@ import urllib.request, urllib.error, urllib.parse
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "lexflow.db"))
 
 try:
+    import dje_api as _dje_api
+except Exception:
+    _dje_api = None
+try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
@@ -479,17 +483,56 @@ def scraper_pje_for_case(cnj, system="pje"):
         except Exception as e:
             err_total += f" | DataJud: {str(e)[:80]}"
 
+    # 3) v4.5.4: Fallback DJE API por CNJ (comunicacoes do diario)
+    if _dje_api is not None:
+        try:
+            uf = (tribunal[2:4] if tribunal.startswith("TJ") else "")
+            if uf:
+                res = _dje_api.dje_search_processo(digits, uf, sigla_tribunal=tribunal)
+                if res.get("ok") and res.get("pubs"):
+                    case_info = {
+                        "classe": res["pubs"][0].get("classe", ""),
+                        "orgao": res["pubs"][0].get("orgao", ""),
+                        "valor_causa": res["pubs"][0].get("valor_causa", ""),
+                    }
+                    return {
+                        "pubs": res["pubs"], "url": res.get("url", ""),
+                        "error": "", "tribunal": tribunal, "case_info": case_info, "source": "dje_api",
+                    }
+        except Exception as e:
+            err_total += f" | DJE: {str(e)[:80]}"
+
     return {"pubs": [], "url": "", "error": err_total, "tribunal": tribunal, "case_info": {}}
 
 
 def scraper_pje_for_oab(numero_oab, uf, timeout=45):
-    """Busca por OAB no Comunica PJE (sem Selenium direto no DataJud, porque o DataJud nao indexa OAB).
-    URL: https://comunica.pje.jus.br/consulta?siglaTribunal={TJ}&numeroOab={num}&ufOab={uf}
-    Retorna dict com pubs, url, error.
+    """Busca por OAB. v4.5.4: API DJE (comunica-api.pje.jus.br) como FONTE PRIMARIA
+    (REST puro, sem browser, sem captcha). Selenium Comunica PJE fica como FALLBACK
+    se a API estiver indisponivel, sem chave ou retornar 0 pubs.
+
+    URL DJE: GET /api/v1/comunicacao?numeroOab={num}&ufOab={uf}&siglaTribunal={TJ}
+    Sem filtro de data (o Patrick pediu pra trazer todas as publicacoes da OAB).
     """
-    if not numero_oab or not uf or not SELENIUM_OK:
-        return {"pubs": [], "url": "", "error": "selenium nao disponivel ou parametros invalidos", "tribunal": ""}
+    if not numero_oab or not uf:
+        return {"pubs": [], "url": "", "error": "parametros invalidos", "tribunal": ""}
     sigla = uf_to_tribunal(uf)
+    # 1) FONTE PRIMARIA: API REST do DJE
+    if _dje_api is not None:
+        try:
+            res = _dje_api.dje_search_oab(numero_oab, uf, sigla_tribunal=sigla)
+            if res.get("ok") and res.get("pubs"):
+                return {
+                    "pubs": res["pubs"], "url": res.get("url", ""), "error": "",
+                    "tribunal": sigla, "source": "dje_api", "total": res.get("total", 0),
+                }
+            err_dje = res.get("error", "0 pubs")
+        except Exception as e:
+            err_dje = f"DJE exception: {str(e)[:120]}"
+    else:
+        err_dje = "dje_api nao importado"
+    # 2) FALLBACK: Selenium Comunica PJE
+    if not SELENIUM_OK:
+        return {"pubs": [], "url": "", "error": f"DJE: {err_dje}", "tribunal": sigla, "source": "dje_api_failed"}
     url = f"https://comunica.pje.jus.br/consulta?siglaTribunal={sigla}&numeroOab={numero_oab}&ufOab={uf}"
     pubs, err = [], ""
     try:
@@ -571,6 +614,25 @@ class MonitoringWorker:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.row_factory = sqlite3.Row
         try:
+            # v4.5.4: OAB/UF vem do monitoring_settings (chaves monitor.oab e monitor.oab_uf)
+            # cadastradas na aba Configuracoes > Monitoramento. Fallback: coluna users.oab
+            mon_oab = conn.execute(
+                "SELECT value FROM monitoring_settings WHERE key='monitor.oab'"
+            ).fetchone()
+            mon_uf = conn.execute(
+                "SELECT value FROM monitoring_settings WHERE key='monitor.oab_uf'"
+            ).fetchone()
+            mon_num = re.sub(r"\D", "", str((mon_oab["value"] if mon_oab else "") or ""))
+            mon_uf_val = str((mon_uf["value"] if mon_uf else "") or "").upper().strip()
+            jobs = []  # lista de (user_id, oab_num, oab_uf)
+            if mon_num and mon_uf_val:
+                # Config global: usa o user do primeiro caso monitorado (ou primeiro user ativo)
+                u = conn.execute(
+                    "SELECT id FROM users WHERE active=1 ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                uid = u["id"] if u else "global"
+                jobs.append((uid, mon_num, mon_uf_val))
+            # Tambem processa users individuais que tenham OAB (retrocompat)
             rows = conn.execute("""
                 SELECT DISTINCT u.id AS user_id, u.oab, u.oab_uf
                 FROM users u JOIN cases c ON c.responsible_id = u.id
@@ -584,6 +646,9 @@ class MonitoringWorker:
                 num = oab["numero"]
                 if not (num and uf):
                     continue
+                if (num, uf) not in [(j[1], j[2]) for j in jobs]:
+                    jobs.append((r["user_id"], num, uf))
+            for user_id, num, uf in jobs:
                 res = scraper_pje_for_oab(num, uf)
                 pubs = res.get("pubs", [])
                 now = datetime.utcnow().isoformat()
@@ -593,7 +658,7 @@ class MonitoringWorker:
                             INSERT INTO monitoring_log(id,case_id,checked_at,publications_found,user_id,source,raw)
                             VALUES(?,?,?,?,?,?,?)
                         """, (f"log-{int(time.time()*1000)}-{hash(p.get('raw',''))%1000000:06d}",
-                              None, now, json.dumps(p, ensure_ascii=False), r["user_id"], "oab",
+                              None, now, json.dumps(p, ensure_ascii=False), user_id, "oab",
                               p.get("raw","")[:1000]))
                     except Exception:
                         pass
