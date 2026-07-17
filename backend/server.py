@@ -1140,12 +1140,12 @@ def pje_tjrj_login(handler):
     secret_blob = (cpf + "|" + seed_hash.hex()[:32]).encode("utf-8")
     if existing:
         conn.execute(
-            "UPDATE integrations SET username=?, secret=?, status=?, last_login_at=? WHERE id=?",
+            "UPDATE integrations SET username=?, secret_2fa=?, status=?, last_login_at=? WHERE id=?",
             (cpf, secret_blob.hex(), "connected", now, existing["id"]),
         )
     else:
         conn.execute(
-            "INSERT INTO integrations(id,user_id,provider,username,secret,status,connected_at,last_login_at) "
+            "INSERT INTO integrations(id,user_id,provider,username,secret_2fa,status,connected_at,last_login_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), u["id"], "pje_tjrj_login", cpf, secret_blob.hex(),
              "connected", now, now),
@@ -2421,6 +2421,27 @@ def monitor_run_now(handler, case_id, body=None):
             res = _monitor.scraper_pje_for_case(cnj_fmt, system="pje")
         except Exception as e:
             return json_response(handler, 500, {"error": "falha no Comunica PJE", "detail": str(e)[:200]})
+        # v4.5.2: enriquecer com cliente PJE 1G logado, se houver.
+        # So funciona se o caso for do TJRJ (CNJ segmento 8.19) e o user tiver feito login no PJE 1G.
+        # Traz partes sigilosas, classe/assunto completo, orgao julgador e valor da causa.
+        if res.get("pubs") or not res.get("error"):
+            tribunal = res.get("tribunal") or ""
+            if tribunal == "TJRJ" and HAS_PJE_TJRJ and PJE_TJRJ_CLIENT.get("instance") and PJE_TJRJ_CLIENT["instance"]._logged_in:
+                try:
+                    pje_data = PJE_TJRJ_CLIENT["instance"].fetch_processo(cnj_fmt)
+                    if pje_data.get("ok") and pje_data.get("data"):
+                        d = pje_data["data"]
+                        if not res.get("case_info"):
+                            res["case_info"] = {}
+                        if d.get("classe"):   res["case_info"]["classe"]     = d["classe"]
+                        if d.get("assunto"):  res["case_info"]["assunto"]    = d["assunto"]
+                        if d.get("orgao"):    res["case_info"]["orgao"]      = d["orgao"]
+                        if d.get("valor_causa"): res["case_info"]["valor_causa"] = d["valor_causa"]
+                        if d.get("partes"):   res["case_info"]["partes"]     = d["partes"]
+                        res["case_info"]["_via_pje_1g"] = True
+                except Exception as _e:
+                    # nao quebra o sync se o cliente PJE 1G falhar; apenas segue com o que o Comunica deu
+                    pass
         if res.get("error"):
             return json_response(handler, 502, {"error": res["error"], "url": res.get("url", "")})
         pubs = res.get("pubs", [])
