@@ -1821,6 +1821,8 @@ def dashboard_summary(handler):
     today = datetime.date.today().isoformat()
     in15 = (datetime.date.today() + datetime.timedelta(days=15)).isoformat()
 
+    NOT_DELETED = "(deleted_at IS NULL OR deleted_at='')"
+
     def cnt(sql, params=()):
         return conn.execute(sql, params).fetchone()[0]
 
@@ -1828,16 +1830,16 @@ def dashboard_summary(handler):
         r = conn.execute(sql, params).fetchone()[0]
         return r or 0
 
-    total_cases = cnt("SELECT COUNT(*) FROM cases")
-    active_cases = cnt("SELECT COUNT(*) FROM cases WHERE status='em_andamento'")
-    total_clients = cnt("SELECT COUNT(*) FROM clients")
-    total_users = cnt("SELECT COUNT(*) FROM users")
+    total_cases = cnt(f"SELECT COUNT(*) FROM cases WHERE {NOT_DELETED}")
+    active_cases = cnt(f"SELECT COUNT(*) FROM cases WHERE {NOT_DELETED} AND status='em_andamento'")
+    total_clients = cnt(f"SELECT COUNT(*) FROM clients WHERE {NOT_DELETED}")
+    total_users = cnt(f"SELECT COUNT(*) FROM users WHERE {NOT_DELETED}")
 
-    today_events = conn.execute("SELECT * FROM events WHERE date=? ORDER BY time", (today,)).fetchall()
-    upcoming_events = conn.execute("SELECT * FROM events WHERE date>=? AND date<=? ORDER BY date, time", (today, in15)).fetchall()
-    overdue_tasks = conn.execute("SELECT * FROM tasks WHERE status='pendente' AND due_date<? ORDER BY due_date", (today,)).fetchall()
-    pending_tasks = conn.execute("SELECT * FROM tasks WHERE status='pendente' ORDER BY due_date").fetchall()
-    upcoming_deadlines = conn.execute("SELECT * FROM cases WHERE next_deadline IS NOT NULL AND next_deadline>=? AND next_deadline<=? ORDER BY next_deadline", (today, in15)).fetchall()
+    today_events = conn.execute(f"SELECT * FROM events WHERE {NOT_DELETED} AND date=? ORDER BY time", (today,)).fetchall()
+    upcoming_events = conn.execute(f"SELECT * FROM events WHERE {NOT_DELETED} AND date>=? AND date<=? ORDER BY date, time", (today, in15)).fetchall()
+    overdue_tasks = conn.execute(f"SELECT * FROM tasks WHERE {NOT_DELETED} AND status='pendente' AND due_date<? ORDER BY due_date", (today,)).fetchall()
+    pending_tasks = conn.execute(f"SELECT * FROM tasks WHERE {NOT_DELETED} AND status='pendente' ORDER BY due_date").fetchall()
+    upcoming_deadlines = conn.execute(f"SELECT * FROM cases WHERE {NOT_DELETED} AND next_deadline IS NOT NULL AND next_deadline>=? AND next_deadline<=? ORDER BY next_deadline", (today, in15)).fetchall()
 
     monthly = []
     for i in range(5, -1, -1):
@@ -1847,24 +1849,24 @@ def dashboard_summary(handler):
             next_first = m.replace(year=m.year + 1, month=1, day=1)
         else:
             next_first = m.replace(month=m.month + 1, day=1)
-        rec = sumval("SELECT SUM(amount) FROM transactions WHERE type='receita' AND status='pago' AND date>=? AND date<?", (first, next_first.isoformat()))
-        exp = sumval("SELECT SUM(amount) FROM transactions WHERE type='despesa' AND status='pago' AND date>=? AND date<?", (first, next_first.isoformat()))
+        rec = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='receita' AND status='pago' AND date>=? AND date<?", (first, next_first.isoformat()))
+        exp = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='despesa' AND status='pago' AND date>=? AND date<?", (first, next_first.isoformat()))
         monthly.append({"month": m.strftime("%b/%y"), "receita": rec, "despesa": exp})
 
-    by_area = conn.execute("SELECT area, COUNT(*) AS total FROM cases GROUP BY area").fetchall()
-    by_status = conn.execute("SELECT status, COUNT(*) AS total FROM cases GROUP BY status").fetchall()
+    by_area = conn.execute(f"SELECT area, COUNT(*) AS total FROM cases WHERE {NOT_DELETED} GROUP BY area").fetchall()
+    by_status = conn.execute(f"SELECT status, COUNT(*) AS total FROM cases WHERE {NOT_DELETED} GROUP BY status").fetchall()
 
-    pending_receivable = sumval("SELECT SUM(amount) FROM transactions WHERE type='receita' AND status='pendente'")
-    pending_payable = sumval("SELECT SUM(amount) FROM transactions WHERE type='despesa' AND status='pendente'")
-    received_total = sumval("SELECT SUM(amount) FROM transactions WHERE type='receita' AND status='pago'")
-    paid_total = sumval("SELECT SUM(amount) FROM transactions WHERE type='despesa' AND status='pago'")
+    pending_receivable = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='receita' AND status='pendente'")
+    pending_payable = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='despesa' AND status='pendente'")
+    received_total = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='receita' AND status='pago'")
+    paid_total = sumval(f"SELECT SUM(amount) FROM transactions WHERE {NOT_DELETED} AND type='despesa' AND status='pago'")
 
-    # Últimas publicações (case_updates com type='publicacao')
+    # Últimas publicações (case_updates com type='publicacao') — exclui publicações de casos na lixeira
     recent_pubs_raw = conn.execute(
         "SELECT u.id, u.case_id, u.date, u.title, u.description,"
         " c.code AS case_code, c.title AS case_title, c.area AS case_area"
         " FROM case_updates u LEFT JOIN cases c ON c.id = u.case_id"
-        " WHERE u.type='publicacao'"
+        f" WHERE u.type='publicacao' AND (c.id IS NULL OR c.deleted_at IS NULL OR c.deleted_at='')"
         " ORDER BY u.date DESC LIMIT 10"
     ).fetchall()
     recent_pubs = [dict(r) for r in recent_pubs_raw]
